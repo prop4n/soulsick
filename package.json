@@ -1,0 +1,13 @@
+{
+  "name": "soulsick",
+  "private": true,
+  "workspaces": ["apps/web"],
+  "scripts": {
+    "dev": "bun run --filter '*' dev & bun run dev:api",
+    "dev:web": "bun run --cwd apps/web dev",
+    "dev:api": "cd apps/api && SOULSICK_CONFIG_DIR=../../data/config SOULSICK_MUSIC_DIR=../../data/music SOULSICK_DOWNLOADS_DIR=../../data/downloads uv run uvicorn soulsick.app:create_app --factory --reload --port 5030",
+    "build": "bun run --cwd apps/web build",
+    "test": "cd apps/api && uv run pytest -q",
+    "typecheck": "bun run --cwd apps/web typecheck"
+  }
+}
