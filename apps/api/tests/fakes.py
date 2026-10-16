@@ -42,6 +42,10 @@ class FakeMB(MusicBrainz):
              "first_release_date": "1991-09-24"},
             {"mbid": "live-1", "title": "MTV Unplugged", "primary_type": "album", "secondary_types": ["live"],
              "first_release_date": "1994-11-01"},
+            {"mbid": "single-1", "title": "Lithium", "primary_type": "single", "secondary_types": [],
+             "first_release_date": "1992-07-13"},
+            {"mbid": "single-2", "title": "Future Single", "primary_type": "single", "secondary_types": [],
+             "first_release_date": "2099-01-01"},
         ]
 
     async def release_group_releases(self, rg_mbid):
@@ -66,6 +70,8 @@ class FakeEngine(SlskEngine):
         self.logged_in = True
         self.downloads: list[tuple[str, str, str]] = []
         self.results: list[PeerResult] = []
+        # Scénario par fichier : issue de chaque tentative successive ("complete" | "fail" | "hold")
+        self.script: dict[str, list[str]] = {}
 
     async def start(self, cfg, shares):
         self.config = cfg
@@ -85,16 +91,30 @@ class FakeEngine(SlskEngine):
         seconds = next((ln // 1000 for t, ln in TRACKS if t == title), 200)
         tiny_flac(Path(local), seconds)
 
+        outcomes = self.script.get(f"{username}:{name}", self.script.get(name, []))
+        outcome = outcomes.pop(0) if outcomes else "complete"
+        if outcome == "hold":
+            return
+
         async def finish():
-            for state, changed in ((TransferState.TRANSFERRING, True), (TransferState.COMPLETE, True)):
+            await asyncio.sleep(0.01)
+            await self.emit(username, remote_path, local, TransferState.QUEUED)
+            if outcome == "fail":
                 await asyncio.sleep(0.01)
-                await self.on_transfer(TransferUpdate(
-                    direction="download", username=username, remote_path=remote_path, local_path=local,
-                    size=100, bytes_transferred=100, speed=1000.0, state=state, place_in_queue=None,
-                    error=None, state_changed=changed,
-                ))
+                await self.emit(username, remote_path, local, TransferState.FAILED, "Enqueue failed due to internal error")
+                return
+            for state in (TransferState.TRANSFERRING, TransferState.COMPLETE):
+                await asyncio.sleep(0.01)
+                await self.emit(username, remote_path, local, state)
 
         asyncio.create_task(finish())
+
+    async def emit(self, username, remote_path, local, state, error=None):
+        await self.on_transfer(TransferUpdate(
+            direction="download", username=username, remote_path=remote_path, local_path=local,
+            size=100, bytes_transferred=100 if state == TransferState.COMPLETE else 0, speed=1000.0,
+            state=state, place_in_queue=None, error=error, state_changed=True,
+        ))
 
     async def apply_shares(self, shares):
         self.shares = shares

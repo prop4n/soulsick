@@ -16,6 +16,14 @@ def sanitize(part: str) -> str:
     return part or "_"
 
 
+def safe_component(part: str) -> str:
+    """Segment de chemin venant du réseau (pseudo, dossier, fichier) : jamais de séparateur ni de `..`."""
+    part = sanitize(part.replace("/", "_").replace("\\", "_"))
+    if part in {".", ".."} or part.startswith(".."):
+        part = "_" + part.lstrip(".")
+    return part or "_"
+
+
 @dataclass
 class TrackNaming:
     albumartist: str

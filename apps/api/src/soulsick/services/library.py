@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING
 from sqlalchemy import delete, select
 
 from ..audiotags import read_meta
-from ..models import AlbumStatus, Artist, LibraryFile, QualityProfile, Release, ReleaseGroup
+from ..models import AlbumStatus, Artist, LibraryFile, QualityProfile, Release, ReleaseGroup, of_artist
 from ..quality import is_audio, is_better_or_equal, worst_format
 
 if TYPE_CHECKING:
@@ -103,7 +103,7 @@ class LibraryService:
             if not artist:
                 return
             profile = await s.get(QualityProfile, artist.quality_profile_id) if artist.quality_profile_id else None
-            rgs = list((await s.execute(select(ReleaseGroup).where(ReleaseGroup.artist_id == artist_id))).scalars())
+            rgs = list((await s.execute(select(ReleaseGroup).where(of_artist(artist_id)))).scalars())
             if not rgs:
                 return
             mbids = [rg.mbid for rg in rgs]

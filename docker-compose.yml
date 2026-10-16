@@ -1,0 +1,29 @@
+services:
+  soulsick:
+    build: .
+    image: soulsick:latest
+    container_name: soulsick
+    restart: unless-stopped
+    # Pour que les autres pairs puissent te joindre, le port 50300 doit être ouvert depuis Internet :
+    # soit tu le rediriges sur ta box vers ce PC (50300 et 50301 en TCP),
+    # soit tu décommentes la ligne suivante (UPnP fonctionne alors ; dans ce cas « ports » est ignoré).
+    # network_mode: host
+    ports:
+      - "5030:5030"          # interface web
+      - "50300:50300"        # Soulseek (à rediriger sur ta box si UPnP est désactivé)
+      - "50301:50301"        # Soulseek, connexions obfusquées
+    volumes:
+      - ./data/config:/config        # base SQLite, pochettes en cache
+      - ./data/music:/music          # bibliothèque rangée par Soulsick (remplace par ton dossier musique)
+      - ./data/downloads:/downloads  # réception avant import
+      - ./data/shares:/shares:ro     # dossiers supplémentaires à partager (optionnel)
+
+  # Optionnel : Navidrome lit la même bibliothèque, en lecture seule.
+  # Dans Soulsick > Réglages > Navidrome : URL http://navidrome:4533
+  # navidrome:
+  #   image: deluan/navidrome:latest
+  #   restart: unless-stopped
+  #   ports: ["4533:4533"]
+  #   volumes:
+  #     - ./data/navidrome:/data
+  #     - ./data/music:/music:ro

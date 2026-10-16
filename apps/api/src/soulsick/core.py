@@ -4,7 +4,7 @@ import asyncio
 import logging
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import select, update
+from sqlalchemy import select, text, update
 
 from .auth import Auth
 from .config import Env
@@ -13,6 +13,7 @@ from .journal import Hub, Journal
 from .models import AlbumStatus, Artist, ReleaseGroup, Transfer, TransferState
 from .musicbrainz import MusicBrainz
 from .services.catalog import CatalogService
+from .services.coverage import CoverageService
 from .services.hunter import HunterService
 from .services.importer import ImportService
 from .services.library import LibraryService
@@ -43,6 +44,7 @@ class Core:
         self.transfers = TransferService(self)
         self.shares = ShareService(self)
         self.navidrome = NavidromeService(self)
+        self.coverage = CoverageService(self)
         self._tasks: list[asyncio.Task] = []
 
         self.engine.on_transfer = self.transfers.on_update
@@ -55,6 +57,13 @@ class Core:
 
     async def start(self) -> None:
         await self.db.create_all()
+        async with self.db.session() as s:
+            # Bases d'avant les sorties partagées : chaque sortie est liée à son artiste principal
+            await s.execute(text(
+                "INSERT OR IGNORE INTO artist_release_group (artist_id, release_group_id) "
+                "SELECT artist_id, id FROM release_group"
+            ))
+            await s.commit()
         await self.catalog.ensure_default_profiles()
         await self._recover()
         await self.journal.emit("app.started", "Soulsick démarré")
@@ -62,6 +71,7 @@ class Core:
             await self.restart_engine()
             self._tasks.append(asyncio.create_task(self.hunter.loop()))
             self._tasks.append(asyncio.create_task(self._sync_loop()))
+            self._tasks.append(asyncio.create_task(self._queue_loop()))
         self._tasks.append(asyncio.create_task(self.library.scan()))
 
     async def _recover(self) -> None:
@@ -78,6 +88,48 @@ class Core:
                 .values(state=TransferState.ABORTED, error="Interrompu par un redémarrage")
             )
             await s.commit()
+        await self._merge_orphan_downloads()
+
+    async def _merge_orphan_downloads(self) -> None:
+        """Répare les doublons laissés par d'anciennes versions : une relance créait une ligne sans
+        lien vers son album. On replie l'orpheline sur la ligne d'origine, qui garde ce lien."""
+        merged = 0
+        async with self.db.session() as s:
+            orphans = list(
+                (
+                    await s.execute(
+                        select(Transfer).where(Transfer.direction == "download", Transfer.candidate_id.is_(None))
+                    )
+                ).scalars()
+            )
+            for o in orphans:
+                linked = (
+                    await s.execute(
+                        select(Transfer)
+                        .where(
+                            Transfer.direction == "download",
+                            Transfer.username == o.username,
+                            Transfer.remote_path == o.remote_path,
+                            Transfer.candidate_id.is_not(None),
+                        )
+                        .order_by(Transfer.id.desc())
+                    )
+                ).scalars().first()
+                if not linked:
+                    continue
+                if linked.state != TransferState.COMPLETE:
+                    linked.state = o.state
+                    linked.error = o.error
+                    linked.bytes_transferred = o.bytes_transferred
+                    linked.completed_at = o.completed_at
+                    linked.attempts = (linked.attempts or 1) + 1
+                await s.delete(o)
+                merged += 1
+            await s.commit()
+        if merged:
+            await self.journal.emit(
+                "transfer.repaired", f"{merged} transfert(s) relancé(s) rattaché(s) à leur album d'origine"
+            )
 
     async def restart_engine(self) -> None:
         cfg = (await self.settings.get()).soulseek
@@ -104,6 +156,8 @@ class Core:
                     )
                 ).scalars()
             )
+        for cid in {t.candidate_id for t in pending if t.candidate_id}:
+            await self.hunter.reactivate(cid, "fichier(s) relancé(s) au redémarrage")
         for t in pending:
             if not t.local_path:
                 continue
@@ -114,6 +168,19 @@ class Core:
                 log.warning("reprise %s : %s", t.remote_path, e)
         if pending:
             await self.journal.emit("download.resumed", f"{len(pending)} téléchargement(s) repris après redémarrage")
+
+    async def _queue_loop(self) -> None:
+        """Demande régulièrement aux pairs notre position dans leur file d'envoi."""
+        while True:
+            await asyncio.sleep(90)
+            if not self.engine.logged_in:
+                continue
+            try:
+                await self.engine.refresh_queue_positions()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                log.exception("positions en file")
 
     async def _sync_loop(self) -> None:
         while True:

@@ -6,6 +6,7 @@ import asyncio
 import logging
 import os
 import re
+import time
 from collections import Counter
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
@@ -26,7 +27,7 @@ from ..models import (
     TransferState,
 )
 from ..quality import FORMAT_LABELS, is_better_or_equal
-from ..scoring import PeerResult, ReleaseOption, ScoredCandidate, rank_candidates
+from ..scoring import PeerResult, ReleaseOption, ScoredCandidate, rank_candidates, unique_tracklists
 from ..slsk.engine import EngineUnavailable
 
 if TYPE_CHECKING:
@@ -71,6 +72,10 @@ class HunterService:
     def __init__(self, core: Core) -> None:
         self.core = core
         self._lock = asyncio.Lock()
+        # Nouveaux essais automatiques d'un fichier refusé par le pair : 3 essais, délais croissants
+        self.max_attempts = 3
+        self.retry_delays: list[float] = [30, 120]
+        self._retrying: set[int] = set()
         self.current: dict | None = None
         self.last_run_at: datetime | None = None
         self.next_run_at: datetime | None = None
@@ -103,8 +108,9 @@ class HunterService:
             return
         await self.run_wanted(cfg.max_searches_per_run)
 
-    async def run_wanted(self, limit: int) -> int:
-        cutoff = datetime.now(UTC) - timedelta(hours=RETRY_HOURS)
+    async def run_wanted(self, limit: int, force: bool = False) -> int:
+        """Chasse les albums recherchés ; `force` ignore le délai entre deux essais infructueux."""
+        cutoff = datetime.now(UTC) - (timedelta(0) if force else timedelta(hours=RETRY_HOURS))
         async with self.core.db.session() as s:
             res = await s.execute(
                 select(ReleaseGroup.id)
@@ -234,8 +240,15 @@ class HunterService:
         ]
         # On privilégie l'édition choisie : si elle est définie, on la teste en premier (à score égal elle gagne)
         options.sort(key=lambda o: o.release_id != rg.selected_release_id)
-        scored = rank_candidates(
-            all_results, options, profile.formats, profile.max_missing_tracks, cfg.min_match, artist.name
+        # Calcul lourd (centaines de dossiers) : hors de la boucle principale, l'app reste réactive
+        t0 = time.perf_counter()
+        scored = await asyncio.to_thread(
+            rank_candidates,
+            all_results, options, profile.formats, profile.max_missing_tracks, cfg.min_match, artist.name,
+        )
+        log.info(
+            "%s : %d dossiers notés en %.1f s (%d éditions MusicBrainz, %d tracklists distinctes)",
+            label, len(scored), time.perf_counter() - t0, len(options), len(unique_tracklists(options)),
         )
 
         # En amélioration : seul un format strictement meilleur que l'existant est utile
@@ -352,6 +365,7 @@ class HunterService:
                     local_path=os.path.join(dest, f["filename"].replace("\\", "/").rsplit("/", 1)[-1]),
                     size=f.get("size"),
                     state=TransferState.QUEUED,
+                    attempts=1,
                     candidate_id=c.id,
                     release_group_id=rg.id,
                 )
@@ -385,38 +399,221 @@ class HunterService:
             await self._fail_candidate(candidate_id, str(e), try_next=False)
 
     async def on_transfer_terminal(self, candidate_id: int) -> None:
-        """Appelé quand un transfert lié à un candidat atteint un état final."""
+        """Réévalue un candidat quand un de ses transferts atteint un état final.
+
+        - fichier refusé : nouvel essai automatique (délais croissants), sur la même ligne ;
+        - essais épuisés : candidat abandonné (bascule éventuelle) ;
+        - candidat déjà abandonné mais tous les fichiers finalement arrivés : on importe quand même.
+        """
         async with self.core.db.session() as s:
             c = await s.get(Candidate, candidate_id)
-            if not c or c.status != CandidateStatus.CHOSEN:
+            if not c or c.status not in (CandidateStatus.CHOSEN, CandidateStatus.FAILED):
                 return
+            status = c.status
             ts = list((await s.execute(select(Transfer).where(Transfer.candidate_id == candidate_id))).scalars())
         audio = [t for t in ts if not _is_extra(t.remote_path)]
-        if any(t.state not in TERMINAL for t in audio):
+        if not audio or any(t.state not in TERMINAL for t in audio):
             return
         failed = [t for t in audio if t.state != TransferState.COMPLETE]
+
         if failed:
-            reasons = Counter(t.error or t.state for t in failed)
-            await self._fail_candidate(
-                candidate_id,
-                f"{len(failed)} fichier(s) en échec : " + ", ".join(f"{k} ×{v}" for k, v in reasons.items()),
-            )
+            if status != CandidateStatus.CHOSEN:
+                return
+            retryable = [t for t in failed if t.state == TransferState.FAILED and (t.attempts or 1) < self.max_attempts]
+            pending = [t for t in retryable if t.id not in self._retrying]
+            if retryable:
+                if pending:
+                    attempt = max(t.attempts or 1 for t in pending)
+                    delay = self.retry_delays[min(attempt - 1, len(self.retry_delays) - 1)]
+                    for t in pending:
+                        self._retrying.add(t.id)
+                    names = ", ".join(t.remote_path.replace("\\", "/").rsplit("/", 1)[-1] for t in pending[:3])
+                    await self.core.journal.emit(
+                        "download.retry_scheduled",
+                        f"{len(pending)} fichier(s) refusé(s) par {pending[0].username} ({names}"
+                        f"{'…' if len(pending) > 3 else ''}) — nouvel essai {attempt + 1}/{self.max_attempts} "
+                        f"dans {_human_delay(delay)}",
+                        release_group_id=c.release_group_id, candidate_id=candidate_id,
+                        data={"transfers": [t.id for t in pending], "delay_s": delay, "attempt": attempt + 1},
+                    )
+                    asyncio.create_task(self._retry_later([t.id for t in pending], delay))
+                return
+            cancelled = [t for t in failed if t.state == TransferState.ABORTED]
+            refused = [t for t in failed if t.state != TransferState.ABORTED]
+            parts = []
+            if refused:
+                reasons = Counter(t.error or t.state for t in refused)
+                parts.append(
+                    f"{len(refused)} fichier(s) refusé(s) après {self.max_attempts} essais : "
+                    + ", ".join(f"{k} ×{v}" for k, v in reasons.items())
+                )
+            if cancelled:
+                parts.append(f"{len(cancelled)} fichier(s) annulé(s) par toi")
+            await self._fail_candidate(candidate_id, " ; ".join(parts))
             return
+
         # Les fichiers annexes encore en cours sont abandonnés
         for t in ts:
             if t.state not in TERMINAL:
                 await self.core.engine.abort(t.username, t.remote_path, "download")
         async with self.core.db.session() as s:
-            c = await s.get(Candidate, candidate_id)
-            assert c
-            c.status = CandidateStatus.DOWNLOADED
+            row = await s.get(Candidate, candidate_id)
+            assert row
+            row.status = CandidateStatus.DOWNLOADED
+            row.reject_reason = None
             await s.commit()
         await self.core.journal.emit(
             "download.complete",
-            f"Tous les fichiers de {c.username} sont arrivés ({len(audio)} pistes) — import en cours",
+            f"Tous les fichiers de {c.username} sont arrivés ({len(audio)} pistes)"
+            + (" — finalement, malgré l'abandon" if status == CandidateStatus.FAILED else "")
+            + " — import en cours",
             release_group_id=c.release_group_id, candidate_id=candidate_id,
         )
         asyncio.create_task(self.core.importer.import_candidate(candidate_id))
+
+    async def _retry_later(self, transfer_ids: list[int], delay: float) -> None:
+        try:
+            await asyncio.sleep(delay)
+            for tid in transfer_ids:
+                async with self.core.db.session() as s:
+                    t = await s.get(Transfer, tid)
+                    # Entre-temps, le pair a pu relancer lui-même : on ne redemande que ce qui est encore en échec
+                    still_failed = bool(t and t.state == TransferState.FAILED)
+                if still_failed:
+                    try:
+                        await self.core.transfers.requeue(tid)
+                    except EngineUnavailable as e:
+                        log.info("nouvel essai impossible : %s", e)
+        finally:
+            for tid in transfer_ids:
+                self._retrying.discard(tid)
+
+    async def complete_from(self, candidate_id: int, track_ids: list[int]) -> int:
+        """Panachage : télécharge chez ce candidat UNIQUEMENT les fichiers des pistes demandées.
+
+        Les pistes déjà reçues d'autres pairs sont gardées ; l'import choisira, piste par piste,
+        le meilleur fichier disponible.
+        """
+        cover = await self.core.coverage.album(await self._rg_of(candidate_id))
+        wanted = set(track_ids)
+        filler = next((f for f in cover["fillers"] if f["candidate_id"] == candidate_id), None)
+        files = [x for x in (filler or {}).get("tracks", []) if x["track_id"] in wanted]
+        if not files:
+            raise ValueError("Ce pair n'a aucune des pistes demandées")
+        async with self.core.db.session() as s:
+            c = await s.get(Candidate, candidate_id)
+            assert c
+            rg = await s.get(ReleaseGroup, c.release_group_id)
+            assert rg
+            artist = await s.get(Artist, rg.artist_id)
+            assert artist
+            dest = os.path.join(str(self.core.env.downloads_dir), f"album-{rg.id}", f"candidate-{c.id}")
+            c.status = CandidateStatus.CHOSEN
+            c.download_dir = dest
+            existing = {
+                t.remote_path: t
+                for t in (await s.execute(select(Transfer).where(Transfer.candidate_id == c.id))).scalars()
+            }
+            sizes = {f["filename"]: f.get("size") for f in c.files}
+            rows = []
+            for x in files:
+                if x["filename"] in existing:
+                    rows.append(existing[x["filename"]])
+                    continue
+                t = Transfer(
+                    direction="download", username=c.username, remote_path=x["filename"],
+                    local_path=os.path.join(dest, x["filename"].replace("\\", "/").rsplit("/", 1)[-1]),
+                    size=sizes.get(x["filename"]), state=TransferState.QUEUED, attempts=1,
+                    candidate_id=c.id, release_group_id=rg.id,
+                )
+                s.add(t)
+                rows.append(t)
+            rg.status = AlbumStatus.DOWNLOADING
+            rg.status_reason = f"Complément depuis {c.username}"
+            await s.commit()
+            label, username, rg_id, fmt = f"{artist.name} – {rg.title}", c.username, rg.id, c.format
+            new_ids = [t.id for t in rows if t.remote_path not in existing]
+            again = [t.id for t in rows if t.remote_path in existing and t.state != TransferState.COMPLETE]
+            for t in rows:
+                self.core.transfers.register("download", t.username, t.remote_path, t.id)
+        received_fmts = sorted({x["format"] for x in cover["tracks"] for x in x["sources"] if x["state"] == "complete" and x.get("format")})
+        mixed = bool(received_fmts and fmt and fmt not in received_fmts)
+        self.core.hub.publish("album", {"id": rg_id, "status": AlbumStatus.DOWNLOADING})
+        await self.core.journal.emit(
+            "download.complement",
+            f"{label} : complément de {len(files)} piste(s) depuis {username} "
+            f"({', '.join(x['title'] for x in files[:4])}{'…' if len(files) > 4 else ''}) — choisi par toi"
+            + (f". Attention : formats mélangés ({', '.join(received_fmts)} + {fmt})" if mixed else ""),
+            level="warning" if mixed else "info", release_group_id=rg_id, candidate_id=candidate_id,
+            data={"tracks": [x["title"] for x in files], "files": [x["filename"] for x in files], "mixed_formats": mixed},
+        )
+        for tid in new_ids:
+            async with self.core.db.session() as s:
+                t = await s.get(Transfer, tid)
+                assert t
+                path, dest_dir = t.remote_path, os.path.dirname(t.local_path or dest)
+            await self.core.engine.download(username, path, dest_dir)
+        for tid in again:
+            await self.core.transfers.requeue(tid, reset_attempts=True)
+        return len(files)
+
+    async def _rg_of(self, candidate_id: int) -> int:
+        async with self.core.db.session() as s:
+            c = await s.get(Candidate, candidate_id)
+            if not c:
+                raise ValueError("Candidat inconnu")
+            return c.release_group_id
+
+    async def reactivate(self, candidate_id: int, why: str) -> None:
+        """Un fichier d'un candidat abandonné repart : le candidat et l'album redeviennent actifs."""
+        async with self.core.db.session() as s:
+            c = await s.get(Candidate, candidate_id)
+            if not c or c.status != CandidateStatus.FAILED:
+                return
+            c.status = CandidateStatus.CHOSEN
+            c.reject_reason = None
+            rg = await s.get(ReleaseGroup, c.release_group_id)
+            assert rg
+            rg.status = AlbumStatus.DOWNLOADING
+            rg.status_reason = f"Reprise depuis {c.username}"
+            await s.commit()
+            rg_id, username = rg.id, c.username
+        self.core.hub.publish("album", {"id": rg_id, "status": AlbumStatus.DOWNLOADING})
+        await self.core.journal.emit(
+            "download.reactivated", f"Candidat {username} réactivé : {why}",
+            release_group_id=rg_id, candidate_id=candidate_id,
+        )
+
+    async def resume_candidate(self, candidate_id: int) -> int:
+        """Reprend un candidat : seuls les fichiers non reçus sont redemandés, sur leurs lignes existantes."""
+        async with self.core.db.session() as s:
+            c = await s.get(Candidate, candidate_id)
+            if not c:
+                return 0
+            ts = list((await s.execute(select(Transfer).where(Transfer.candidate_id == candidate_id))).scalars())
+            missing = [t for t in ts if t.state != TransferState.COMPLETE]
+            c.status = CandidateStatus.CHOSEN
+            c.reject_reason = None
+            rg = await s.get(ReleaseGroup, c.release_group_id)
+            assert rg
+            rg.status = AlbumStatus.DOWNLOADING
+            rg.status_reason = f"Reprise depuis {c.username}"
+            await s.commit()
+            rg_id, username, done = rg.id, c.username, len(ts) - len(missing)
+        self.core.hub.publish("album", {"id": rg_id, "status": AlbumStatus.DOWNLOADING})
+        await self.core.journal.emit(
+            "download.resumed_candidate",
+            f"Reprise du téléchargement depuis {username} : {len(missing)} fichier(s) redemandé(s), "
+            f"{done} déjà reçu(s) conservé(s)",
+            release_group_id=rg_id, candidate_id=candidate_id,
+        )
+        for t in missing:
+            if t.state in (TransferState.QUEUED, TransferState.INITIALIZING, TransferState.TRANSFERRING):
+                continue
+            await self.core.transfers.requeue(t.id, reset_attempts=True)
+        if not missing:
+            await self.on_transfer_terminal(candidate_id)
+        return len(missing)
 
     async def _fail_candidate(self, candidate_id: int, reason: str, try_next: bool = True) -> None:
         async with self.core.db.session() as s:
@@ -484,6 +681,11 @@ class HunterService:
                     stalled.append(c.id)
         for cid in stalled:
             await self._fail_candidate(cid, f"aucun transfert n'a démarré en {STALL_MINUTES} minutes (pair absent ou file pleine)")
+        # Auto-réparation : un candidat dont tous les transferts sont finis mais qui n'a pas été
+        # réévalué (redémarrage pendant un délai de relance, par exemple) est repris ici.
+        for c in chosen:
+            if c.id not in stalled:
+                await self.on_transfer_terminal(c.id)
 
     def state(self) -> dict:
         return {
@@ -491,6 +693,10 @@ class HunterService:
             "last_run_at": self.last_run_at.isoformat() if self.last_run_at else None,
             "next_run_at": self.next_run_at.isoformat() if self.next_run_at else None,
         }
+
+
+def _human_delay(seconds: float) -> str:
+    return f"{round(seconds)} s" if seconds < 90 else f"{round(seconds / 60)} min"
 
 
 def _is_extra(path: str) -> bool:

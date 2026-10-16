@@ -9,7 +9,7 @@ import logging
 from typing import Any
 
 from .db import Database
-from .models import Event
+from .models import Event, iso_utc
 
 log = logging.getLogger(__name__)
 
@@ -41,7 +41,7 @@ class Hub:
 def event_to_dict(e: Event) -> dict:
     return {
         "id": e.id,
-        "ts": e.ts.isoformat(),
+        "ts": iso_utc(e.ts),
         "kind": e.kind,
         "level": e.level,
         "message": e.message,

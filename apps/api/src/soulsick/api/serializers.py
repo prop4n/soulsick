@@ -1,8 +1,8 @@
-from ..models import Artist, Candidate, LibraryFile, QualityProfile, Release, ReleaseGroup, Share
+from ..models import iso_utc, Artist, Candidate, LibraryFile, QualityProfile, Release, ReleaseGroup, Share
 
 
 def iso(d) -> str | None:
-    return d.isoformat() if d else None
+    return iso_utc(d)
 
 
 def profile_dict(p: QualityProfile) -> dict:
@@ -141,4 +141,5 @@ def library_file_dict(f: LibraryFile) -> dict:
         "tag_title": f.tag_title,
         "release_group_mbid": f.release_group_mbid,
         "release_mbid": f.release_mbid,
+        "recording_mbid": f.recording_mbid,
     }

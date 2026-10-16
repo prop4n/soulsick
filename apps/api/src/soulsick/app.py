@@ -3,18 +3,22 @@ import contextlib
 import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
+from urllib.parse import urlparse
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import __version__
+from . import logbuffer
 from .api import routes_auth, routes_catalog, routes_network, routes_system
 from .auth import COOKIE
 from .config import Env, get_env
 from .core import Core
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+# aioslsk est très bavard : la sortie du conteneur ne garde que ses erreurs, la page Console reçoit tout
+logbuffer.install()
 
 
 def create_app(env: Env | None = None, core: Core | None = None) -> FastAPI:
@@ -24,12 +28,15 @@ def create_app(env: Env | None = None, core: Core | None = None) -> FastAPI:
     async def lifespan(app: FastAPI):
         c = core or Core(env)
         app.state.core = c
+        logbuffer.BUFFER.attach(asyncio.get_running_loop(), c.hub.publish)
         await c.start()
         ticker = asyncio.create_task(_status_ticker(c))
+        flusher = asyncio.create_task(logbuffer.BUFFER.flush_loop())
         try:
             yield
         finally:
             ticker.cancel()
+            flusher.cancel()
             await c.stop()
 
     app = FastAPI(title="Soulsick", version=__version__, lifespan=lifespan)
@@ -39,6 +46,11 @@ def create_app(env: Env | None = None, core: Core | None = None) -> FastAPI:
     @app.websocket("/api/ws")
     async def ws(socket: WebSocket):
         c: Core = socket.app.state.core
+        origin = socket.headers.get("origin")
+        if origin and urlparse(origin).netloc != socket.headers.get("host"):
+            # Un autre site ne peut pas ouvrir le flux temps réel avec ta session
+            await socket.close(code=4403)
+            return
         if not await c.auth.check(socket.cookies.get(COOKIE)):
             await socket.close(code=4401)
             return
@@ -70,7 +82,7 @@ async def _status_ticker(core: Core) -> None:
 def _mount_web(app: FastAPI, dist: Path | None) -> None:
     """Sert le front compilé (SPA) si disponible."""
     if dist is None:
-        candidate = Path(__file__).resolve().parents[4] / "web" / "dist"
+        candidate = Path(__file__).resolve().parents[3] / "web" / "dist"
         dist = candidate if candidate.is_dir() else None
     if dist is None or not dist.is_dir():
         return

@@ -7,10 +7,11 @@ from pydantic import BaseModel, Field
 from sqlalchemy import delete, desc, select
 
 from ..core import Core
-from ..models import Share, Transfer, TransferState
+from ..models import Share, Transfer
 from ..scoring import group_results
 from ..services.transfers import TERMINAL, transfer_to_dict
 from ..slsk.engine import EngineUnavailable
+from ..slsk.rules import forbidden_share_reason
 from .deps import get_core, require_user
 from .serializers import share_dict
 
@@ -69,6 +70,7 @@ async def get_search(ticket: int, core: Core = Depends(get_core)) -> dict:
         "peer_count": len(live.results),
         "file_count": sum(len(r.files) for r in live.results),
         "folders": folders[:300],
+        "responses": list(reversed(live.responses[-300:])),
     }
 
 
@@ -83,6 +85,8 @@ async def download(body: DownloadIn, core: Core = Depends(get_core)) -> dict:
         ids = await core.transfers.download_manual(body.username, body.files)
     except EngineUnavailable as e:
         raise _unavailable(e) from e
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
     return {"ids": ids}
 
 
@@ -130,17 +134,17 @@ async def retry_transfer(tid: int, core: Core = Depends(get_core)) -> dict:
     if t.direction != "download":
         raise HTTPException(400)
     try:
-        core.transfers.register("download", t.username, t.remote_path, t.id)
-        dest = os.path.dirname(t.local_path) if t.local_path else os.path.join(str(core.env.downloads_dir), "manual")
-        await core.engine.download(t.username, t.remote_path, dest)
+        await core.transfers.requeue(tid, reset_attempts=True)
     except EngineUnavailable as e:
         raise _unavailable(e) from e
-    async with core.db.session() as s:
-        row = await s.get(Transfer, tid)
-        assert row
-        row.state = TransferState.QUEUED
-        row.error = None
-        await s.commit()
+    if t.candidate_id:
+        # Le candidat redevient actif : à l'arrivée du fichier, l'album sera importé
+        await core.hunter.reactivate(t.candidate_id, "nouvel essai demandé par toi")
+    name = t.remote_path.replace("\\", "/").rsplit("/", 1)[-1]
+    await core.journal.emit(
+        "transfer.retried", f"Nouvel essai demandé par toi : « {name} » chez {t.username}",
+        transfer_id=tid, release_group_id=t.release_group_id, candidate_id=t.candidate_id,
+    )
     return {"ok": True}
 
 
@@ -205,6 +209,9 @@ async def create_share(body: ShareIn, core: Core = Depends(get_core)) -> dict:
     path = os.path.abspath(body.path)
     if not os.path.isdir(path):
         raise HTTPException(400, f"Dossier introuvable dans le conteneur : {path}")
+    reason = forbidden_share_reason(path, [str(core.env.config_dir), str(core.env.downloads_dir)])
+    if reason:
+        raise HTTPException(400, reason)
     async with core.db.session() as s:
         if (await s.execute(select(Share).where(Share.path == path))).scalar_one_or_none():
             raise HTTPException(409, "Ce dossier est déjà partagé")

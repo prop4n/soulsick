@@ -9,7 +9,7 @@ Score sur 100 :
 import re
 from dataclasses import dataclass, field
 
-from .matching import FileRef, MatchResult, TrackRef, match_files
+from .matching import FileRef, MatchResult, TrackRef, match_files, normalize
 from .quality import FORMAT_LABELS, FileInfo, detect_format, extension_of, format_rank, is_audio, worst_format
 
 _DISC_DIR = re.compile(r"^(?:cd|disc|disk)\s*\d+$", re.I)
@@ -210,6 +210,27 @@ def score_candidate(
     return c
 
 
+def unique_tracklists(releases: list[ReleaseOption]) -> list[ReleaseOption]:
+    """Beaucoup d'éditions (pressages, pays, rééditions) ont exactement la même tracklist :
+    on n'en garde qu'une par tracklist (la première, donc l'édition retenue si elle est en tête)."""
+    seen: set[tuple] = set()
+    out = []
+    for r in releases:
+        sig = tuple((t.disc, t.position, normalize(t.title)) for t in r.tracks)
+        if sig in seen:
+            continue
+        seen.add(sig)
+        out.append(r)
+    return out
+
+
+def compatible(releases: list[ReleaseOption], n_files: int) -> list[ReleaseOption]:
+    """Éditions de taille plausible pour un dossier de n fichiers (sinon : toutes, pour expliquer le rejet)."""
+    tol = max(3, n_files // 2)
+    ok = [r for r in releases if abs(len(r.tracks) - n_files) <= tol]
+    return ok or releases
+
+
 def rank_candidates(
     results: list[PeerResult],
     releases: list[ReleaseOption],
@@ -218,8 +239,9 @@ def rank_candidates(
     min_match: float = 0.6,
     artist_hint: str = "",
 ) -> list[ScoredCandidate]:
+    releases = unique_tracklists(releases)
     cands = [
-        score_candidate(c, releases, profile_formats, max_missing_tracks, min_match, artist_hint)
+        score_candidate(c, compatible(releases, len(c.audio_files)), profile_formats, max_missing_tracks, min_match, artist_hint)
         for c in group_results(results)
     ]
     cands.sort(key=lambda c: (c.rejected, -c.score))

@@ -105,3 +105,34 @@ def test_rank_candidates_prefers_flac_and_rejects_with_reason():
     assert "non autorisé" in by_user["lowuser"].reject_reason
     assert "manquante" in by_user["partial"].reject_reason
     assert by_user["flacuser"].detail["match"]["tracks_matched"] == 3
+
+
+def test_editions_identiques_dedoublonnees():
+    from soulsick.scoring import compatible, unique_tracklists
+
+    a = ReleaseOption(1, "CD", TRACKS)
+    b = ReleaseOption(2, "Vinyle", [TrackRef(t.disc, t.position, t.title.upper(), t.length_s) for t in TRACKS])
+    c = ReleaseOption(3, "Deluxe", TRACKS + [TrackRef(1, 4, "Bonus", 100)])
+    assert [r.release_id for r in unique_tracklists([a, b, c])] == [1, 3]  # même tracklist → une seule
+    big = ReleaseOption(4, "Coffret", [TrackRef(1, i, f"T{i}", 100) for i in range(1, 41)])
+    assert [r.release_id for r in compatible([a, big], 3)] == [1]
+    assert [r.release_id for r in compatible([big], 3)] == [4]  # rien de compatible : on garde tout
+
+
+def test_notation_rapide_avec_beaucoup_d_editions():
+    """Régression : 150 éditions × 500 dossiers ne doit pas prendre une minute."""
+    import time
+
+    editions = [ReleaseOption(i, f"Ed {i}", TRACKS) for i in range(140)] + [
+        ReleaseOption(1000 + i, f"Variante {i}", TRACKS + [TrackRef(1, 4, f"Bonus {i}", 120)]) for i in range(10)
+    ]
+    peers = [
+        PeerResult(f"u{p}", True, 1_000_000, 0,
+                   [RemoteFile(f"u{p}\\A\\0{i+1} - {t.title}.flac", bit_depth=16, duration=int(t.length_s))
+                    for i, t in enumerate(TRACKS)])
+        for p in range(500)
+    ]
+    t0 = time.perf_counter()
+    res = rank_candidates(peers, editions, PROFILE)
+    assert time.perf_counter() - t0 < 5
+    assert not res[0].rejected and res[0].detail["match"]["tracks_matched"] == 3

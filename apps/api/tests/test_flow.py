@@ -56,7 +56,7 @@ async def test_full_flow(ctx):
 
     r = await client.post("/api/artists", json={
         "mbid": "5b11f4ce-a62d-471e-81fc-a69a8278c7da", "mode": "validation",
-        "quality_profile_id": profiles[0]["id"], "primary_types": ["album"],
+        "quality_profile_id": profiles[0]["id"], "primary_types": ["album"], "monitor": "all",
     })
     assert r.status_code == 200, r.text
     aid = r.json()["id"]
@@ -102,7 +102,7 @@ async def test_auto_mode_downloads_without_approval(ctx):
     client, core, engine, env = ctx
     await client.post("/api/auth/setup", json={"username": "admin", "password": "motdepasse"})
     r = await client.post("/api/artists", json={
-        "mbid": "5b11f4ce-a62d-471e-81fc-a69a8278c7da", "mode": "auto", "primary_types": ["album"],
+        "mbid": "5b11f4ce-a62d-471e-81fc-a69a8278c7da", "mode": "auto", "primary_types": ["album"], "monitor": "all",
     })
     aid = r.json()["id"]
     rid = next(rg["id"] for rg in (await client.get(f"/api/artists/{aid}")).json()["release_groups"]
@@ -120,7 +120,7 @@ async def test_auto_mode_downloads_without_approval(ctx):
 async def test_no_candidate_keeps_wanted_with_reason(ctx):
     client, core, engine, env = ctx
     await client.post("/api/auth/setup", json={"username": "admin", "password": "motdepasse"})
-    r = await client.post("/api/artists", json={"mbid": "x", "mode": "auto", "primary_types": ["album"]})
+    r = await client.post("/api/artists", json={"mbid": "x", "mode": "auto", "primary_types": ["album"], "monitor": "all"})
     aid = r.json()["id"]
     rid = next(rg["id"] for rg in (await client.get(f"/api/artists/{aid}")).json()["release_groups"]
                if rg["title"] == "Nevermind")

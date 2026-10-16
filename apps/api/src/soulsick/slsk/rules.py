@@ -7,6 +7,11 @@ from dataclasses import dataclass, field
 from ..quality import AUDIO_EXTENSIONS, extension_of
 
 DEFAULT_SHARE_EXTENSIONS = sorted(AUDIO_EXTENSIONS | {"jpg", "jpeg", "png", "cue", "log"})
+# Jamais partagés, même si on les autorise explicitement
+BLOCKED_EXTENSIONS = {
+    "db", "sqlite", "sqlite3", "db-wal", "db-shm", "key", "pem", "p12", "pfx", "kdbx",
+    "env", "ini", "conf", "cfg", "json", "yaml", "yml", "toml", "sh", "ssh",
+}
 
 
 @dataclass
@@ -30,6 +35,8 @@ class ShareRules:
             if fnmatch.fnmatch(rel, pat) or fnmatch.fnmatch(name, pat):
                 return f"exclu par le motif « {pat} »"
         ext = extension_of(name)
+        if ext in BLOCKED_EXTENSIONS or name.endswith(("-wal", "-shm")):
+            return f"extension .{ext} jamais partagée (fichier sensible)"
         if ext not in self.extensions:
             return f"extension .{ext or '∅'} non autorisée"
         return None
@@ -67,3 +74,15 @@ def scan_share(rules: ShareRules, sample_limit: int = 200) -> ShareScan:
                 if len(out.excluded_samples) < sample_limit:
                     out.excluded_samples.append({"path": rel, "reason": reason})
     return out
+
+
+def forbidden_share_reason(path: str, protected: list[str]) -> str | None:
+    """Refuse de partager la racine, ou un dossier qui contient (ou est dans) un dossier protégé."""
+    real = os.path.realpath(path)
+    if real == os.path.sep:
+        return "Impossible de partager la racine du système"
+    for p in protected:
+        pr = os.path.realpath(p)
+        if real == pr or pr.startswith(real + os.sep) or real.startswith(pr + os.sep):
+            return f"Ce dossier contient ou touche {pr} (configuration/réception de Soulsick), il ne peut pas être partagé"
+    return None

@@ -27,6 +27,7 @@ class Database:
 
         async with self.engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
+            await conn.run_sync(_add_missing_columns)
 
     @asynccontextmanager
     async def session(self) -> AsyncIterator[AsyncSession]:
@@ -35,3 +36,23 @@ class Database:
 
     async def dispose(self) -> None:
         await self.engine.dispose()
+
+
+def _add_missing_columns(conn) -> None:
+    """Migration minimale : ajoute les colonnes apparues dans le modèle depuis la création de la base.
+
+    Seules les colonnes avec une valeur par défaut serveur (ou nullables) sont ajoutées ;
+    les données existantes ne sont jamais modifiées.
+    """
+    from sqlalchemy import inspect
+
+    insp = inspect(conn)
+    for table in Base.metadata.sorted_tables:
+        existing = {c["name"] for c in insp.get_columns(table.name)}
+        for col in table.columns:
+            if col.name in existing:
+                continue
+            ddl = f'ALTER TABLE "{table.name}" ADD COLUMN "{col.name}" {col.type.compile(conn.dialect)}'
+            if col.server_default is not None:
+                ddl += f" DEFAULT {col.server_default.arg}"
+            conn.exec_driver_sql(ddl)

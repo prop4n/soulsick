@@ -47,6 +47,7 @@ from aioslsk.transfer.model import TransferDirection
 from aioslsk.transfer.state import TransferState as SlskState
 
 from ..models import TransferState
+from ..naming import safe_component
 from ..scoring import PeerResult, RemoteFile
 from ..settings_store import SoulseekSettings
 from .rules import ShareRules
@@ -85,6 +86,8 @@ class TransferUpdate:
     place_in_queue: int | None
     error: str | None
     state_changed: bool
+    # Le pair a accepté la demande et l'a mise dans sa file d'envoi
+    remotely_queued: bool = False
 
 
 @dataclass
@@ -93,6 +96,11 @@ class LiveSearch:
     query: str
     started: float
     results: list[PeerResult] = field(default_factory=list)
+    # Journal des réponses, dans l'ordre d'arrivée (pour l'affichage en direct)
+    responses: list[dict] = field(default_factory=list)
+
+
+search_log = logging.getLogger("soulsick.search")
 
 
 def remote_file(fd: FileData, directory: str | None = None) -> RemoteFile:
@@ -198,7 +206,7 @@ class SlskEngine:
             "error": self.error,
             "download_speed": c.transfers.get_download_speed() if c else 0,
             "upload_speed": c.transfers.get_upload_speed() if c else 0,
-            "free_upload_slots": c.transfers.get_free_upload_slots() if c else 0,
+            "free_upload_slots": c.transfers.get_free_upload_slots() if c else (self.config.upload_slots if self.config else 0),
             "upload_slots": self.config.upload_slots if self.config else 0,
             "shared_folders": dirs,
             "shared_files": files,
@@ -308,14 +316,35 @@ class SlskEngine:
         if live is None:
             return
         r: SearchResult = event.result
+        files = [remote_file(f) for f in r.shared_items]
         live.results.append(
             PeerResult(
                 username=r.username,
                 has_free_slots=r.has_free_slots,
                 avg_speed=r.avg_speed,
                 queue_size=r.queue_size,
-                files=[remote_file(f) for f in r.shared_items],
+                files=files,
             )
+        )
+        folders = len({f.filename.replace("/", "\\").rsplit("\\", 1)[0] for f in files})
+        elapsed = round(time.time() - live.started, 1)
+        live.responses.append(
+            {
+                "at": elapsed,
+                "username": r.username,
+                "files": len(files),
+                "folders": folders,
+                "locked": len(r.locked_results),
+                "free_slot": r.has_free_slots,
+                "speed": r.avg_speed,
+                "queue": r.queue_size,
+            }
+        )
+        search_log.info(
+            "« %s » +%.1fs : %s répond — %d fichier(s) dans %d dossier(s)%s, %s, file %d, %d Ko/s",
+            live.query, elapsed, r.username, len(files), folders,
+            f", {len(r.locked_results)} verrouillé(s)" if r.locked_results else "",
+            "slot libre" if r.has_free_slots else "pas de slot", r.queue_size, r.avg_speed // 1024,
         )
 
     async def _on_transfer_added(self, event: TransferAddedEvent) -> None:
@@ -342,6 +371,7 @@ class SlskEngine:
             place_in_queue=t.place_in_queue,
             error=t.fail_reason or t.abort_reason,
             state_changed=changed,
+            remotely_queued=bool(getattr(t, "remotely_queued", False)),
         )
         try:
             await self.on_transfer(upd)
@@ -354,6 +384,7 @@ class SlskEngine:
         c = self._require()
         req = await c.searches.search(query)
         live = LiveSearch(ticket=req.ticket, query=query, started=time.time())
+        search_log.info("Requête « %s » envoyée au serveur (ticket %d) — en attente des réponses des pairs", query, req.ticket)
         self.searches[req.ticket] = live
         # Nettoyage des vieilles recherches (on garde les 50 dernières)
         if len(self.searches) > 50:
@@ -361,9 +392,24 @@ class SlskEngine:
                 self.searches.pop(k, None)
         return live
 
-    async def search(self, query: str, wait_s: float) -> list[PeerResult]:
+    async def search(self, query: str, wait_s: float, min_wait_s: float = 8.0, quiet_s: float = 4.0) -> list[PeerResult]:
+        """Écoute les réponses ; s'arrête dès qu'elles se tarissent (≥ min_wait_s, ≤ wait_s).
+
+        Les recherches populaires remplissent toute la fenêtre ; les rares n'attendent pas pour rien.
+        """
         live = await self.start_search(query)
-        await asyncio.sleep(wait_s)
+        last_count, last_change = 0, time.monotonic()
+        start = time.monotonic()
+        while (elapsed := time.monotonic() - start) < wait_s:
+            await asyncio.sleep(0.5)
+            if len(live.results) != last_count:
+                last_count, last_change = len(live.results), time.monotonic()
+            elif elapsed >= min_wait_s and time.monotonic() - last_change >= quiet_s:
+                search_log.info(
+                    "« %s » : plus de nouvelle réponse depuis %.0f s, écoute arrêtée après %.0f s (%d pairs)",
+                    query, quiet_s, elapsed, last_count,
+                )
+                break
         return list(live.results)
 
     # --- Transferts -----------------------------------------------------------
@@ -372,7 +418,7 @@ class SlskEngine:
         """Télécharge un fichier distant vers `dest_dir` (le nom de fichier distant est conservé)."""
         c = self._require()
         os.makedirs(dest_dir, exist_ok=True)
-        name = remote_path.replace("\\", "/").rsplit("/", 1)[-1]
+        name = safe_component(remote_path.replace("\\", "/").rsplit("/", 1)[-1])
         existing = c.transfers.find_transfer(username, remote_path, TransferDirection.DOWNLOAD)
         if existing is not None:
             existing.local_path = os.path.join(dest_dir, name)
@@ -406,6 +452,22 @@ class SlskEngine:
         t = self._find(username, remote_path, direction)
         if t:
             await self._require().transfers.remove(t)
+
+    async def refresh_queue_positions(self) -> None:
+        """Demande aux pairs notre place dans leur file pour les téléchargements en attente."""
+        c = self._require()
+        waiting = [
+            t for t in c.transfers.get_downloads()
+            if t.state.VALUE == SlskState.QUEUED and getattr(t, "remotely_queued", False)
+        ]
+        for t in waiting:
+            try:
+                place = await c.transfers.request_place_in_queue(t)
+            except Exception:
+                continue
+            if place is not None and place != t.place_in_queue:
+                t.place_in_queue = place
+                await self._emit_transfer(t, t.state.VALUE, changed=False)
 
     # --- Parcourir un pair ----------------------------------------------------
 

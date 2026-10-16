@@ -1,3 +1,5 @@
+import time
+
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 
@@ -6,6 +8,22 @@ from ..core import Core
 from .deps import get_core
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
+
+MAX_FAILURES = 5
+WINDOW = 15 * 60
+_failures: dict[str, list[float]] = {}
+
+
+def _ip(request: Request) -> str:
+    return request.client.host if request.client else "?"
+
+
+def _check_rate(ip: str) -> None:
+    now = time.monotonic()
+    recent = [t for t in _failures.get(ip, []) if now - t < WINDOW]
+    _failures[ip] = recent
+    if len(recent) >= MAX_FAILURES:
+        raise HTTPException(429, "Trop de tentatives, réessaie dans quelques minutes")
 
 
 class Credentials(BaseModel):
@@ -39,7 +57,9 @@ async def setup(body: Credentials, request: Request, response: Response, core: C
 
 @router.post("/login")
 async def login(body: Credentials, request: Request, response: Response, core: Core = Depends(get_core)) -> dict:
+    _check_rate(_ip(request))
     if not await core.auth.verify(body.username, body.password):
+        _failures.setdefault(_ip(request), []).append(time.monotonic())
         await core.journal.emit(
             "auth.failed", f"Tentative de connexion refusée pour « {body.username} »", level="warning",
             data={"ip": request.client.host if request.client else None},

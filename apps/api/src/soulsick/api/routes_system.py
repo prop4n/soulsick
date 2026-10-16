@@ -1,4 +1,6 @@
 import asyncio
+import re
+import time
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import FileResponse, Response
@@ -14,6 +16,7 @@ from .deps import get_core, require_user
 from .serializers import library_file_dict, profile_dict
 
 router = APIRouter(prefix="/api", tags=["system"], dependencies=[Depends(require_user)])
+_UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 
 
 @router.get("/status")
@@ -77,13 +80,41 @@ async def put_settings(body: AppSettings, core: Core = Depends(get_core)) -> dic
         "settings.updated", "Réglages modifiés : " + (", ".join(changed) or "aucun changement"), data={"sections": changed}
     )
     if body.soulseek != current.soulseek:
-        await core.restart_engine()
+        only_library = body.soulseek.model_copy(update={"share_library": current.soulseek.share_library}) == current.soulseek
+        if only_library:
+            # Activer/désactiver le partage de /music ne nécessite pas de reconnexion
+            asyncio.create_task(core.shares.rescan())
+        else:
+            await core.restart_engine()
     return _redact(body)
 
 
 @router.post("/settings/navidrome/test")
 async def test_navidrome(core: Core = Depends(get_core)) -> dict:
     return await core.navidrome.trigger_scan(force=True)
+
+
+@router.post("/hunter/run")
+async def run_hunter(core: Core = Depends(get_core)) -> dict:
+    """Lance tout de suite une chasse sur les albums recherchés (sans attendre l'intervalle)."""
+    if not core.engine.logged_in:
+        raise HTTPException(503, "Non connecté au réseau Soulseek")
+    limit = (await core.settings.get()).hunter.max_searches_per_run
+    async with core.db.session() as s:
+        n = (
+            await s.execute(
+                select(func.count())
+                .select_from(ReleaseGroup)
+                .join(Artist, Artist.id == ReleaseGroup.artist_id)
+                .where(
+                    ReleaseGroup.status == AlbumStatus.WANTED,
+                    ReleaseGroup.monitored.is_(True),
+                    Artist.monitored.is_(True),
+                )
+            )
+        ).scalar_one()
+    asyncio.create_task(core.hunter.run_wanted(limit, force=True))
+    return {"queued": min(n, limit)}
 
 
 @router.post("/engine/reconnect")
@@ -181,6 +212,40 @@ async def events(
         return [event_to_dict(e) for e in (await s.execute(stmt)).scalars()]
 
 
+# --- Console (logs techniques en direct) -----------------------------------------
+
+
+@router.get("/logs")
+async def logs(after: int = 0, limit: int = 1000) -> dict:
+    from ..logbuffer import BUFFER
+
+    return {"logs": BUFFER.since(after, min(limit, 3000)), "capacity": BUFFER.records.maxlen}
+
+
+@router.get("/activity")
+async def activity(core: Core = Depends(get_core)) -> dict:
+    """Ce sur quoi Soulsick travaille en ce moment."""
+    now = time.time()
+    searches = [
+        {
+            "ticket": ls.ticket,
+            "query": ls.query,
+            "age": round(now - ls.started, 1),
+            "responses": len(ls.results),
+            "files": sum(len(r.files) for r in ls.results),
+        }
+        for ls in sorted(core.engine.searches.values(), key=lambda x: -x.started)
+        if now - ls.started < 60
+    ]
+    return {
+        "hunter": core.hunter.state(),
+        "searches": searches,
+        "library_scanning": core.library.scanning,
+        "retrying": len(core.hunter._retrying),
+        "engine": core.engine.status(),
+    }
+
+
 # --- Bibliothèque --------------------------------------------------------------
 
 
@@ -200,7 +265,7 @@ async def unmatched(core: Core = Depends(get_core)) -> list[dict]:
 
 @router.get("/covers/{kind}/{mbid}")
 async def cover(kind: str, mbid: str, size: int = 500, core: Core = Depends(get_core)):
-    if kind not in {"release-group", "release"} or size not in {250, 500, 1200}:
+    if kind not in {"release-group", "release"} or size not in {250, 500, 1200} or not _UUID.fullmatch(mbid):
         raise HTTPException(400)
     path = await core.mb.cover(kind, mbid, size)
     if not path:

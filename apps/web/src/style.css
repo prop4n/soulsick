@@ -1,0 +1,162 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+
+@custom-variant dark (&:is(.dark *));
+
+/*
+ * Soulsick — étiquette de label.
+ * Graphite froid et neutre, papier blanc net, un seul accent : bleu Klein, franc, jamais pastel.
+ * Les titres sont composés serrés et condensés comme une tranche de pochette.
+ * Vert = rangé dans la bibliothèque ; rouge = destructif ; orange = attend une décision.
+ */
+
+@theme inline {
+  --font-sans: "Archivo Variable", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "Martian Mono Variable", ui-monospace, monospace;
+  --font-heading: var(--font-sans);
+
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-faint: var(--faint);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-success: var(--success);
+  --color-warning: var(--warning);
+  --color-border: var(--border);
+  --color-border-strong: var(--border-strong);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-well: var(--well);
+
+  --color-sidebar: var(--background);
+  --color-sidebar-foreground: var(--foreground);
+  --color-sidebar-border: var(--border);
+  --color-sidebar-accent: var(--accent);
+  --color-sidebar-accent-foreground: var(--accent-foreground);
+  --color-sidebar-primary: var(--primary);
+  --color-sidebar-primary-foreground: var(--primary-foreground);
+  --color-sidebar-ring: var(--ring);
+
+  --radius-sm: calc(var(--radius) - 3px);
+  --radius-md: calc(var(--radius) - 1px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+}
+
+/* Clair : papier froid, encre presque noire, bleu Klein saturé */
+:root {
+  --radius: 0.3rem;
+  --background: #eceef1;
+  --card: #ffffff;
+  --popover: #ffffff;
+  --well: #e3e6ea;
+  --foreground: #0d0e11;
+  --card-foreground: var(--foreground);
+  --popover-foreground: var(--foreground);
+  --muted: #e3e6ea;
+  --muted-foreground: #4c525c;
+  --faint: #7d838d;
+  --primary: #1f35ff;
+  --primary-foreground: #ffffff;
+  --secondary: #e3e6ea;
+  --secondary-foreground: var(--foreground);
+  --accent: #dfe2e7;
+  --accent-foreground: var(--foreground);
+  --destructive: #e0301e;
+  --success: #12924f;
+  --warning: #d46a00;
+  --border: rgb(13 14 17 / 0.1);
+  --border-strong: rgb(13 14 17 / 0.2);
+  --input: rgb(13 14 17 / 0.16);
+  --ring: #1f35ff;
+}
+
+/* Sombre (défaut) : graphite neutre, sans teinte chaude */
+.dark {
+  --background: #0b0c0e;
+  --card: #121417;
+  --popover: #16181c;
+  --well: #08090a;
+  --foreground: #eceef1;
+  --card-foreground: var(--foreground);
+  --popover-foreground: var(--foreground);
+  --muted: #1a1d21;
+  --muted-foreground: #a1a7b0;
+  --faint: #6c727c;
+  --primary: #4458ff;
+  --primary-foreground: #ffffff;
+  --secondary: #1a1d21;
+  --secondary-foreground: var(--foreground);
+  --accent: #1c1f24;
+  --accent-foreground: var(--foreground);
+  --destructive: #ff4d3d;
+  --success: #2fcf78;
+  --warning: #f29d1a;
+  --border: rgb(236 238 241 / 0.08);
+  --border-strong: rgb(236 238 241 / 0.16);
+  --input: rgb(236 238 241 / 0.12);
+  --ring: #6676ff;
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  html {
+    @apply bg-background;
+    -webkit-font-smoothing: antialiased;
+  }
+  body {
+    @apply bg-background text-foreground font-sans;
+  }
+  /* Martian Mono est large par nature : on la resserre pour les colonnes de données */
+  .font-mono, code, kbd, pre {
+    font-stretch: 80%;
+  }
+  ::selection {
+    background: var(--primary);
+    color: var(--primary-foreground);
+  }
+}
+
+@layer utilities {
+  /* Chiffres alignés pour tout ce qui se compare (tailles, vitesses, compteurs) */
+  .tnum {
+    font-variant-numeric: tabular-nums;
+  }
+  /* Légende : petites capitales espacées, comme les mentions d'un dos de pochette */
+  .legend {
+    @apply text-[10.5px] font-semibold uppercase tracking-[0.12em] text-faint;
+  }
+  /* Composition « tranche » : grotesque condensée, grasse, serrée */
+  .spine {
+    font-family: var(--font-sans);
+    font-stretch: 68%;
+    font-weight: 800;
+    letter-spacing: -0.02em;
+    line-height: 0.92;
+  }
+  /* Logo : même famille, étirée large, sur un pavé bleu */
+  .wordmark {
+    font-family: var(--font-sans);
+    font-stretch: 125%;
+    font-weight: 900;
+    letter-spacing: -0.01em;
+    text-transform: uppercase;
+  }
+  .scrollbar-thin {
+    scrollbar-width: thin;
+    scrollbar-color: var(--border-strong) transparent;
+  }
+}

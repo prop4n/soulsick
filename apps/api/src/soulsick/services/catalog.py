@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
-from ..models import AlbumStatus, Artist, QualityProfile, Release, ReleaseGroup, Track
+from ..models import AlbumStatus, Artist, ArtistReleaseGroup, QualityProfile, Release, ReleaseGroup, Track, of_artist
 from ..musicbrainz import pick_default_release
 
 if TYPE_CHECKING:
@@ -27,6 +27,31 @@ def wants(artist: Artist, primary: str | None, secondary: list[str]) -> bool:
     if (primary or "other") not in artist.primary_types:
         return False
     return all(s in artist.secondary_types for s in secondary)
+
+
+# Étapes en cours ou terminées : on change le drapeau de suivi, jamais le statut
+_KEEP_STATUS = {
+    AlbumStatus.SEARCHING,
+    AlbumStatus.DOWNLOADING,
+    AlbumStatus.IMPORTING,
+    AlbumStatus.NEEDS_REVIEW,
+    AlbumStatus.IMPORTED,
+}
+
+
+def section_of(rg: ReleaseGroup) -> str:
+    """Même regroupement que l'interface : premier type secondaire, sinon le type primaire."""
+    return (rg.secondary_types or [None])[0] or rg.primary_type or "other"
+
+
+def _set_monitored(rg: ReleaseGroup, monitored: bool) -> bool:
+    if rg.monitored == monitored:
+        return False
+    rg.monitored = monitored
+    if rg.status not in _KEEP_STATUS:
+        rg.status = AlbumStatus.WANTED if monitored else AlbumStatus.IGNORED
+        rg.status_reason = None
+    return True
 
 
 class CatalogService:
@@ -49,7 +74,7 @@ class CatalogService:
         quality_profile_id: int | None,
         primary_types: list[str],
         secondary_types: list[str],
-        monitor: str = "all",  # all | future | none
+        monitor: str = "none",  # none | future | all — par défaut rien : tu choisis ensuite
     ) -> Artist:
         info = await self.core.mb.get_artist(mbid)
         async with self.core.db.session() as s:
@@ -100,10 +125,21 @@ class CatalogService:
         async with self.core.db.session() as s:
             artist = await s.get(Artist, artist_id)
             assert artist
+            # Recherche globale : une sortie peut déjà exister chez un autre artiste (featuring, split)
+            mbids = [g["mbid"] for g in groups]
             existing = {
                 rg.mbid: rg
-                for rg in (await s.execute(select(ReleaseGroup).where(ReleaseGroup.artist_id == artist_id))).scalars()
-            }
+                for rg in (await s.execute(select(ReleaseGroup).where(ReleaseGroup.mbid.in_(mbids)))).scalars()
+            } if mbids else {}
+            linked = set(
+                (
+                    await s.execute(
+                        select(ArtistReleaseGroup.release_group_id).where(ArtistReleaseGroup.artist_id == artist_id)
+                    )
+                ).scalars()
+            )
+            new_rgs: list[ReleaseGroup] = []
+            shared: list[str] = []
             now_str = datetime.now(UTC).date().isoformat()
             for g in groups:
                 rg = existing.get(g["mbid"])
@@ -112,6 +148,11 @@ class CatalogService:
                     rg.primary_type = g["primary_type"]
                     rg.secondary_types = g["secondary_types"]
                     rg.first_release_date = g["first_release_date"]
+                    if rg.id not in linked:
+                        # Déjà connue via un autre artiste : on la rattache, sans toucher à son suivi
+                        s.add(ArtistReleaseGroup(artist_id=artist_id, release_group_id=rg.id))
+                        linked.add(rg.id)
+                        shared.append(rg.title)
                     continue
                 follow = wants(artist, g["primary_type"], g["secondary_types"])
                 if initial_monitor == "none":
@@ -129,17 +170,22 @@ class CatalogService:
                     status=AlbumStatus.WANTED if follow and artist.monitored else AlbumStatus.IGNORED,
                 )
                 s.add(rg)
+                new_rgs.append(rg)
                 if initial_monitor is None and follow:
                     added.append(g["title"])
+            await s.flush()
+            for rg in new_rgs:
+                s.add(ArtistReleaseGroup(artist_id=artist_id, release_group_id=rg.id))
             artist.last_synced_at = datetime.now(UTC)
             await s.commit()
 
         await self.core.journal.emit(
             "musicbrainz.synced",
             f"Discographie de {name} synchronisée : {len(groups)} sorties sur MusicBrainz"
-            + (f", {len(added)} nouvelle(s) suivie(s) : {', '.join(added[:5])}" if added else ""),
+            + (f", {len(added)} nouvelle(s) suivie(s) : {', '.join(added[:5])}" if added else "")
+            + (f", {len(shared)} partagée(s) avec un autre artiste suivi ({', '.join(shared[:3])})" if shared else ""),
             artist_id=artist_id,
-            data={"total": len(groups), "new_monitored": added},
+            data={"total": len(groups), "new_monitored": added, "shared": shared},
         )
         # Ce qui est déjà dans /music passe en « importé »
         await self.core.library.refresh_artist(artist_id)
@@ -215,14 +261,84 @@ class CatalogService:
         )
         return rg
 
+    async def bulk_monitor(self, artist_id: int, scope: str, section: str | None = None) -> int:
+        """Suivi en masse. scope : all | none | future. section : album, ep, single, live… (comme l'affichage)."""
+        today = datetime.now(UTC).date().isoformat()
+        changed: list[str] = []
+        async with self.core.db.session() as s:
+            artist = await s.get(Artist, artist_id)
+            if not artist:
+                return 0
+            rgs = list((await s.execute(select(ReleaseGroup).where(of_artist(artist_id)))).scalars())
+            for rg in rgs:
+                if section and section_of(rg) != section:
+                    continue
+                want = scope == "all" or (scope == "future" and (rg.first_release_date or "9999") >= today)
+                if _set_monitored(rg, want):
+                    changed.append(rg.title)
+            await s.commit()
+            name = artist.name
+        if changed:
+            what = {"all": "suivies", "none": "plus suivies", "future": "suivies seulement si à venir"}[scope]
+            await self.core.journal.emit(
+                "album.bulk",
+                f"{name} : {len(changed)} sortie(s){f' ({section})' if section else ''} {what}",
+                artist_id=artist_id,
+                data={"scope": scope, "section": section, "titles": changed},
+            )
+        return len(changed)
+
+    async def apply_type_filter(self, artist_id: int) -> int:
+        """Après un changement des types suivis : on arrête de suivre l'existant qui n'en fait plus partie.
+
+        Ajouter un type ne lance rien automatiquement (pas d'avalanche de téléchargements) :
+        les actions groupées servent à ça.
+        """
+        changed: list[str] = []
+        async with self.core.db.session() as s:
+            artist = await s.get(Artist, artist_id)
+            if not artist:
+                return 0
+            rgs = list((await s.execute(select(ReleaseGroup).where(of_artist(artist_id)))).scalars())
+            for rg in rgs:
+                if rg.monitored and not wants(artist, rg.primary_type, rg.secondary_types) and _set_monitored(rg, False):
+                    changed.append(rg.title)
+            await s.commit()
+            name = artist.name
+        if changed:
+            await self.core.journal.emit(
+                "album.bulk",
+                f"{name} : {len(changed)} sortie(s) d'un type désormais non suivi ne sont plus suivies",
+                artist_id=artist_id,
+                data={"scope": "types", "titles": changed},
+            )
+        return len(changed)
+
     async def delete_artist(self, artist_id: int) -> None:
         async with self.core.db.session() as s:
             a = await s.get(Artist, artist_id)
             if not a:
                 return
             name = a.name
+            owned = list((await s.execute(select(ReleaseGroup).where(ReleaseGroup.artist_id == artist_id))).scalars())
+            kept = 0
+            for rg in owned:
+                other = (
+                    await s.execute(
+                        select(ArtistReleaseGroup.artist_id).where(
+                            ArtistReleaseGroup.release_group_id == rg.id, ArtistReleaseGroup.artist_id != artist_id
+                        )
+                    )
+                ).scalars().first()
+                if other is not None:
+                    rg.artist_id = other
+                    kept += 1
+            await s.flush()
             await s.delete(a)
             await s.commit()
         await self.core.journal.emit(
-            "artist.removed", f"Artiste retiré : {name} (les fichiers de /music sont conservés)", artist_id=artist_id
+            "artist.removed",
+            f"Artiste retiré : {name} (les fichiers de /music sont conservés"
+            + (f" ; {kept} sortie(s) partagée(s) restent chez l'autre artiste)" if kept else ")"),
+            artist_id=artist_id
         )

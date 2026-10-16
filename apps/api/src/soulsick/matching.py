@@ -8,6 +8,7 @@ Utilisé à deux endroits :
 import re
 import unicodedata
 from dataclasses import dataclass, field
+from functools import lru_cache
 
 from rapidfuzz import fuzz
 
@@ -61,6 +62,7 @@ class MatchResult:
         return sum(v * w for v, w in parts) / total_w
 
 
+@lru_cache(maxsize=65536)
 def normalize(text: str) -> str:
     text = unicodedata.normalize("NFKD", text)
     text = "".join(c for c in text if not unicodedata.combining(c))
@@ -113,6 +115,7 @@ def match_files(
 
     multi_disc = len({t.disc for t in tracks}) > 1
     artist_norm = normalize(artist_hint)
+    track_titles = [normalize(t.title) for t in tracks]  # une fois, pas pour chaque fichier
     pairs: list[tuple[float, int, int, float, bool, float | None]] = []
 
     for fi, f in enumerate(files):
@@ -125,7 +128,7 @@ def match_files(
             ftitle = ftitle[len(artist_norm) + 1 :]
 
         for ti, t in enumerate(tracks):
-            title_score = fuzz.token_set_ratio(normalize(t.title), ftitle) / 100 if ftitle else 0.0
+            title_score = fuzz.token_set_ratio(track_titles[ti], ftitle) / 100 if ftitle else 0.0
             if multi_disc:
                 number_match = num == t.position and (disc is None or disc == t.disc)
             else:

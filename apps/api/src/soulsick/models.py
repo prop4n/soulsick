@@ -12,6 +12,15 @@ def utcnow() -> datetime:
     return datetime.now(UTC)
 
 
+def iso_utc(d: datetime | None) -> str | None:
+    """ISO 8601 avec fuseau : SQLite renvoie des dates naïves, stockées en UTC."""
+    if d is None:
+        return None
+    if d.tzinfo is None:
+        d = d.replace(tzinfo=UTC)
+    return d.isoformat()
+
+
 class AlbumStatus(StrEnum):
     IGNORED = "ignored"
     WANTED = "wanted"
@@ -117,6 +126,29 @@ class ReleaseGroup(Base):
         foreign_keys="Release.release_group_id",
         lazy="raise",
         passive_deletes=True,
+    )
+
+
+class ArtistReleaseGroup(Base):
+    """Une sortie peut appartenir à plusieurs artistes (featuring, split, collaboration).
+
+    `ReleaseGroup.artist_id` reste l'artiste « principal » (nom utilisé pour chercher et ranger) ;
+    cette table dit dans quelles discographies la sortie apparaît.
+    """
+
+    __tablename__ = "artist_release_group"
+    artist_id: Mapped[int] = mapped_column(ForeignKey("artist.id", ondelete="CASCADE"), primary_key=True)
+    release_group_id: Mapped[int] = mapped_column(
+        ForeignKey("release_group.id", ondelete="CASCADE"), primary_key=True, index=True
+    )
+
+
+def of_artist(artist_id: int):
+    """Filtre : sorties présentes dans la discographie de l'artiste (principal ou associé)."""
+    from sqlalchemy import select
+
+    return ReleaseGroup.id.in_(
+        select(ArtistReleaseGroup.release_group_id).where(ArtistReleaseGroup.artist_id == artist_id)
     )
 
 
@@ -233,7 +265,10 @@ class Transfer(Base):
     speed: Mapped[float] = mapped_column(Float, default=0)
     state: Mapped[str] = mapped_column(String, default=TransferState.QUEUED, index=True)
     place_in_queue: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    remotely_queued: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Nombre de tentatives (1 = premier essai) ; une relance réutilise toujours la même ligne
+    attempts: Mapped[int] = mapped_column(Integer, default=1, server_default="1")
     candidate_id: Mapped[int | None] = mapped_column(
         ForeignKey("candidate.id", ondelete="SET NULL"), nullable=True, index=True
     )
