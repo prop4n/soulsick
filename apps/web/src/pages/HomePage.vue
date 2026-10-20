@@ -8,6 +8,7 @@ import { toast } from 'vue-sonner'
 import AddArtistDialog from '@/components/AddArtistDialog.vue'
 import AlbumRow from '@/components/AlbumRow.vue'
 import PageHeader from '@/components/PageHeader.vue'
+import StuckBanner from '@/components/StuckBanner.vue'
 import { Button } from '@/components/ui/button'
 import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from '@/components/ui/empty'
 import { Skeleton } from '@/components/ui/skeleton'
@@ -94,6 +95,8 @@ const runHunt = useMutation({
         </Button>
       </template>
     </PageHeader>
+
+    <StuckBanner />
 
     <!-- The chain: each stage is a tab -->
     <div role="tablist" :aria-label="t('home.chain')" class="grid grid-cols-2 overflow-hidden rounded-xl bg-card md:grid-cols-4">

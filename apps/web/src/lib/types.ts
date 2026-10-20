@@ -45,6 +45,7 @@ export interface AppStatus {
   albums: Partial<Record<AlbumStatus, number>>
   attention: number
   active_transfers: { download: number, upload: number }
+  stuck_transfers: number
   chat_unread: number
   storage: StorageLevel
   library_guard: LibraryGuard
@@ -253,6 +254,32 @@ export interface Transfer {
   created_at: string | null
   started_at: string | null
   completed_at: string | null
+  /** Album download that stopped moving (see the stuck_* hunter settings) */
+  stuck?: boolean
+  stuck_reason?: StuckReason | null
+  stuck_since?: string | null
+}
+
+export type StuckReason = 'no_progress' | 'queue_frozen' | 'retrying'
+
+/** Another peer that has tracks a source has not delivered yet */
+export interface PeerAlternative {
+  candidate_id: number
+  username: string
+  format: string | null
+  score: number
+  status: string
+  has_free_slots: boolean
+  queue_size: number
+  avg_speed: number
+  tracks: number
+  track_ids: number[]
+}
+
+export interface PeerAlternatives {
+  release_group_id: number | null
+  missing: number
+  alternatives: PeerAlternative[]
 }
 
 export interface JournalEvent {
@@ -357,6 +384,9 @@ export interface AppSettings {
     proposals: number
     min_match: number
     download_covers: boolean
+    stuck_no_progress_minutes: number
+    stuck_queue_minutes: number
+    stuck_after_attempts: number
   }
   library: {
     naming_template: string

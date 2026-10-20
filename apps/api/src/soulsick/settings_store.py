@@ -28,6 +28,11 @@ class HunterSettings(BaseModel):
     proposals: int = 5
     min_match: float = 0.6
     download_covers: bool = True
+    # When an album download counts as stuck (shown to you, nothing automatic)
+    stuck_no_progress_minutes: int = Field(10, ge=1)
+    stuck_queue_minutes: int = Field(30, ge=1)
+    # Flagged from this attempt on (0 = never)
+    stuck_after_attempts: int = Field(2, ge=0)
 
 
 class LibrarySettings(BaseModel):

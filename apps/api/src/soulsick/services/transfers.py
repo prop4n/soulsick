@@ -5,12 +5,12 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
 from sqlalchemy import select
 
-from ..messages import M, UserError
+from ..messages import M, Msg, UserError
 from ..models import Transfer, TransferState, iso_utc
 from ..naming import safe_component
 from ..slsk.engine import TransferUpdate
@@ -43,6 +43,10 @@ def transfer_to_dict(t: Transfer) -> dict:
         "created_at": iso_utc(t.created_at),
         "started_at": iso_utc(t.started_at),
         "completed_at": iso_utc(t.completed_at),
+        # Filled from the live state (TransferService.check_stuck)
+        "stuck": False,
+        "stuck_reason": None,
+        "stuck_since": None,
     }
 
 
@@ -58,6 +62,8 @@ class TransferService:
         self._cancelled: set[int] = set()
         self._done: set[int] = set()
         self._lock = asyncio.Lock()
+        # Download motion: since when each one last moved, and why it counts as stuck (if it does)
+        self._watch: dict[int, dict] = {}
 
     async def _find_id(self, u: TransferUpdate) -> int | None:
         key = (u.direction, u.username, u.remote_path)
@@ -129,6 +135,9 @@ class TransferService:
                 "place_in_queue": u.place_in_queue,
                 "remotely_queued": u.remotely_queued,
             }
+            if u.direction == "download":
+                self._track_motion(tid, u)
+                live |= self._stuck_fields(tid)
             self._live[tid] = live
             queue_changed = (
                 prev.get("place_in_queue") != u.place_in_queue or prev.get("remotely_queued") != u.remotely_queued
@@ -143,6 +152,101 @@ class TransferService:
                     transfer_id=tid, data={"remote_path": u.remote_path, "local_path": u.local_path},
                 )
             self.core.hub.publish("transfer", live)
+
+    def _track_motion(self, tid: int, u: TransferUpdate) -> None:
+        """Notes when a download last moved; what moves again is no longer stuck."""
+        if u.state in TERMINAL or u.state == TransferState.PAUSED:
+            self._watch.pop(tid, None)
+            return
+        now = datetime.now(UTC)
+        w = self._watch.get(tid)
+        if w is None:
+            w = self._watch[tid] = _new_watch(u.bytes_transferred, now)
+        if u.bytes_transferred != w["bytes"] or (u.state_changed and u.state == TransferState.TRANSFERRING):
+            w["progress_at"] = now
+            if w["reason"] == "no_progress":
+                w["reason"] = w["since"] = None
+        w["bytes"] = u.bytes_transferred
+        if u.remotely_queued and u.state == TransferState.QUEUED:
+            place = u.place_in_queue
+            if w["queue_since"] is None or (place is not None and (w["queue_place"] is None or place < w["queue_place"])):
+                w["queue_since"] = now
+                if w["reason"] == "queue_frozen":
+                    w["reason"] = w["since"] = None
+            w["queue_place"] = place
+        else:
+            w["queue_since"] = w["queue_place"] = None
+            if w["reason"] == "queue_frozen":
+                w["reason"] = w["since"] = None
+
+    def _stuck_fields(self, tid: int) -> dict:
+        w = self._watch.get(tid)
+        reason = w["reason"] if w else None
+        return {"stuck": reason is not None, "stuck_reason": reason, "stuck_since": iso_utc(w["since"]) if reason else None}
+
+    def stuck_count(self) -> int:
+        return sum(1 for w in self._watch.values() if w["reason"])
+
+    def _unwatch(self, tid: int) -> dict:
+        self._watch.pop(tid, None)
+        cleared = {"stuck": False, "stuck_reason": None, "stuck_since": None}
+        if tid in self._live:
+            self._live[tid] |= cleared
+        return cleared
+
+    async def check_stuck(self) -> None:
+        """Flags album downloads that stopped moving. Only shown to you: nothing is done automatically."""
+        cfg = (await self.core.settings.get()).hunter
+        now = datetime.now(UTC)
+        async with self.core.db.session() as s:
+            rows = (await s.execute(select(Transfer).where(
+                Transfer.direction == "download",
+                Transfer.candidate_id.is_not(None),
+                Transfer.state.not_in([*TERMINAL, TransferState.PAUSED]),
+            ))).scalars().all()
+        active = set()
+        for t in rows:
+            live = self._live.get(t.id, {})
+            state = live.get("state", t.state)
+            if state in TERMINAL or state == TransferState.PAUSED:
+                continue
+            active.add(t.id)
+            w = self._watch.get(t.id)
+            if w is None:
+                # Not seen moving since start-up: the clocks start now
+                w = self._watch[t.id] = _new_watch(live.get("bytes_transferred", t.bytes_transferred), now)
+            queued = bool(live.get("remotely_queued", t.remotely_queued)) and state == TransferState.QUEUED
+            if queued and w["queue_since"] is None:
+                w["queue_since"] = now
+            reason = None
+            if cfg.stuck_after_attempts and (t.attempts or 1) >= cfg.stuck_after_attempts:
+                reason = "retrying"
+            elif state == TransferState.TRANSFERRING and now - w["progress_at"] >= timedelta(minutes=cfg.stuck_no_progress_minutes):
+                reason = "no_progress"
+            elif queued and now - w["queue_since"] >= timedelta(minutes=cfg.stuck_queue_minutes):
+                reason = "queue_frozen"
+            if reason == w["reason"]:
+                continue
+            entering = w["reason"] is None
+            w["reason"] = reason
+            w["since"] = {"no_progress": w["progress_at"], "queue_frozen": w["queue_since"]}.get(reason, now) if reason else None
+            self._publish_stuck(t.id)
+            if reason and entering:
+                await self.core.journal.emit(
+                    "download.stuck",
+                    M("download.stuck", name=t.remote_path.replace("\\", "/").rsplit("/", 1)[-1], peer=t.username,
+                      why=_why(reason, w, t.attempts or 1, now)),
+                    level="warning", transfer_id=t.id, release_group_id=t.release_group_id, candidate_id=t.candidate_id,
+                )
+        for tid in [i for i in self._watch if i not in active and self._watch[i]["reason"]]:
+            # Ended, paused or dropped since: no longer stuck
+            self._unwatch(tid)
+            self._publish_stuck(tid)
+
+    def _publish_stuck(self, tid: int) -> None:
+        fields = self._stuck_fields(tid)
+        self._live[tid] = self._live.get(tid, {"id": tid}) | fields
+        self.core.hub.publish("transfer", {"id": tid, **fields})
 
     async def _is_terminal(self, tid: int) -> bool:
         async with self.core.db.session() as s:
@@ -227,7 +331,7 @@ class TransferService:
             t.error = None
             t.completed_at = None
             await s.commit()
-            data = transfer_to_dict(t)
+            data = transfer_to_dict(t) | self._unwatch(tid)
         self.register("download", t.username, t.remote_path, t.id)
         self._live.pop(tid, None)
         self.core.hub.publish("transfer", data)
@@ -249,7 +353,7 @@ class TransferService:
             t.state = TransferState.PAUSED
             t.speed = 0
             await s.commit()
-            data = transfer_to_dict(t)
+            data = transfer_to_dict(t) | self._unwatch(tid)
         self._live[tid] = {**self._live.get(tid, {}), "state": TransferState.PAUSED, "speed": 0}
         self.core.hub.publish("transfer", data)
         return True
@@ -302,7 +406,7 @@ class TransferService:
                 t.speed = 0
                 t.completed_at = datetime.now(UTC)
                 await s.commit()
-            data = transfer_to_dict(t)
+            data = transfer_to_dict(t) | self._unwatch(tid)
         self._live.pop(tid, None)
         self.core.hub.publish("transfer", data)
         if data["candidate_id"]:
@@ -319,6 +423,7 @@ class TransferService:
     def forget(self, tid: int) -> None:
         """A download cancelled outside this service (an album source dropped): it stays cancelled."""
         self._live.pop(tid, None)
+        self._watch.pop(tid, None)
         self._cancelled.add(tid)
 
     async def stop_on_engine(self, username: str, path: str, direction: str = "download") -> None:
@@ -361,4 +466,14 @@ class TransferService:
 
 def _snapshot(t: Transfer) -> dict:
     return transfer_to_dict(t)
+
+
+def _new_watch(transferred: int, now: datetime) -> dict:
+    return {"bytes": transferred, "progress_at": now, "queue_place": None, "queue_since": None, "reason": None, "since": None}
+
+
+def _why(reason: str, w: dict, attempts: int, now: datetime) -> Msg:
+    if reason == "retrying":
+        return M("stuck.retrying", n=attempts)
+    return M(f"stuck.{reason}", minutes=int((now - w["since"]).total_seconds() // 60))
 

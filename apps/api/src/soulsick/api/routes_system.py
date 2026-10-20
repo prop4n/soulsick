@@ -46,6 +46,7 @@ async def status(core: Core = Depends(get_core)) -> dict:
         "albums": {k: v for k, v in counts.items()},
         "attention": counts.get(AlbumStatus.PENDING_APPROVAL, 0) + counts.get(AlbumStatus.NEEDS_REVIEW, 0),
         "active_transfers": {"download": active.get("download", 0), "upload": active.get("upload", 0)},
+        "stuck_transfers": core.transfers.stuck_count(),
         "chat_unread": await core.chat.unread_private(),
         "storage": core.storage.quick_level(),
         "library_guard": core.guard.state(),

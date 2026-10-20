@@ -14,6 +14,7 @@ from ..quality import ALL_FORMATS, is_audio, is_better_or_equal
 if TYPE_CHECKING:
     from ..core import Core
 
+ACTIVE = ("queued", "initializing", "transferring", "paused")
 SOURCE_STATUSES = {CandidateStatus.CHOSEN, CandidateStatus.DOWNLOADED, CandidateStatus.FAILED}
 # Sources to complete or upgrade from (a dropped source can still deliver a single track)
 FILLER_STATUSES = {CandidateStatus.PROPOSED, CandidateStatus.REJECTED, CandidateStatus.FAILED}
@@ -38,7 +39,7 @@ class CoverageService:
     def __init__(self, core: Core) -> None:
         self.core = core
 
-    async def album(self, rg_id: int) -> dict:
+    async def album(self, rg_id: int, offers: int | None = 8) -> dict:
         releases = await self.core.catalog.releases_with_tracks(rg_id)
         async with self.core.db.session() as s:
             rg = await s.get(ReleaseGroup, rg_id)
@@ -153,6 +154,49 @@ class CoverageService:
             "tracks": tracks,
             "summary": {**counts, "total": len(tracks), "upgrade": len(upgrade_fmt)},
             "received_formats": received_formats,
-            "fillers": fillers[:8],
-            "upgraders": upgraders[:8],
+            "fillers": fillers[:offers],
+            "upgraders": upgraders[:offers],
         }
+
+    async def alternatives(self, candidate_id: int) -> dict:
+        """Other peers that have tracks this source has not delivered yet (to switch peer).
+
+        A track counts when it is neither received nor shelved, and no OTHER source is fetching it.
+        """
+        async with self.core.db.session() as s:
+            current = await s.get(Candidate, candidate_id)
+            if not current:
+                return {"release_group_id": None, "missing": 0, "alternatives": []}
+            rg_id = current.release_group_id
+        cov = await self.album(rg_id, offers=None)
+        wanted = {
+            t["track_id"] for t in cov["tracks"]
+            if t["state"] not in ("received", "in_library")
+            and not any(x["candidate_id"] != candidate_id and x["state"] in ACTIVE for x in t["sources"])
+        }
+        out: dict = {"release_group_id": rg_id, "missing": len(wanted), "alternatives": []}
+        if not wanted:
+            return out
+        release = next(r for r in await self.core.catalog.releases_with_tracks(rg_id) if r.id == cov["release_id"])
+        async with self.core.db.session() as s:
+            rg = await s.get(ReleaseGroup, rg_id)
+            assert rg
+            artist = await s.get(Artist, rg.artist_id)
+            assert artist
+            cands = list((await s.execute(select(Candidate).where(
+                Candidate.release_group_id == rg_id, Candidate.id != candidate_id,
+                Candidate.status.in_(list(FILLER_STATUSES)),
+            ))).scalars())
+        alts = []
+        for c in cands:
+            got = sorted(tid for tid in _track_map(c, release, artist.name) if tid in wanted)
+            if got:
+                alts.append({
+                    "candidate_id": c.id, "username": c.username, "format": c.format, "score": c.score,
+                    "status": c.status, "has_free_slots": c.has_free_slots, "queue_size": c.queue_size,
+                    "avg_speed": c.avg_speed, "tracks": len(got), "track_ids": got,
+                })
+        # Whole album first, then a free slot, then the best score
+        alts.sort(key=lambda a: (-a["tracks"], not a["has_free_slots"], -a["score"]))
+        out["alternatives"] = alts[:8]
+        return out

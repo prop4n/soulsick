@@ -5,8 +5,10 @@ import { ArrowDownIcon, ArrowUpIcon, BrushCleaningIcon, PauseIcon, PlayIcon, Rot
 import { useMutation, useQueryClient } from '@tanstack/vue-query'
 import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { useRoute } from 'vue-router'
 import { toast } from 'vue-sonner'
 import PageHeader from '@/components/PageHeader.vue'
+import SwitchPeerMenu from '@/components/SwitchPeerMenu.vue'
 import TransferRow from '@/components/TransferRow.vue'
 import {
   AlertDialog,
@@ -33,18 +35,24 @@ import { useLive } from '@/stores/live'
 const { t } = useI18n()
 const live = useLive()
 const qc = useQueryClient()
+const route = useRoute()
 const direction = ref<'download' | 'upload'>('download')
-const filter = ref<'active' | 'done' | 'all'>('active')
+type Filter = 'active' | 'stuck' | 'done' | 'all'
+const filter = ref<Filter>(['active', 'stuck', 'done', 'all'].includes(route.query.filter as string) ? route.query.filter as Filter : 'active')
 const { data, isPending } = useTransfers(direction)
 
 const RUNNING = ['queued', 'initializing', 'transferring']
 const ACTIVE = [...RUNNING, 'paused']
 const stateOf = (tr: { id: number, state: string }) => live.transfers.get(tr.id)?.state ?? tr.state
+const isStuck = (tr: Transfer) => !!(live.transfers.get(tr.id)?.stuck ?? tr.stuck) && RUNNING.includes(stateOf(tr))
+const stuckCount = computed(() => (data.value ?? []).filter(isStuck).length)
 
 const rows = computed(() => (data.value ?? []).filter((tr) => {
   const state = stateOf(tr)
   if (filter.value === 'active')
     return ACTIVE.includes(state)
+  if (filter.value === 'stuck')
+    return isStuck(tr)
   if (filter.value === 'done')
     return !ACTIVE.includes(state)
   return true
@@ -60,7 +68,18 @@ const groups = computed(() => {
       map.set(key, [])
     map.get(key)!.push(tr)
   }
-  return [...map.entries()].map(([key, items]) => ({ key, username: key.split('|')[0], dir: key.split('|')[1], items }))
+  return [...map.entries()]
+    .map(([key, items]) => ({
+      key,
+      username: key.split('|')[0],
+      dir: key.split('|')[1],
+      items,
+      // An album source still downloading can be switched to another peer
+      candidateId: items.some(x => ACTIVE.includes(stateOf(x))) ? items.find(x => x.candidate_id)?.candidate_id ?? null : null,
+      stuck: items.some(isStuck),
+    }))
+    // What needs you comes first
+    .sort((a, b) => Number(b.stuck) - Number(a.stuck))
 })
 
 // --- Selection ----------------------------------------------------------------------
@@ -189,6 +208,10 @@ const clear = useMutation({
         <ToggleGroupItem value="active">
           {{ t('transfers.filters.active') }}
         </ToggleGroupItem>
+        <ToggleGroupItem v-if="direction === 'download' && (stuckCount || filter === 'stuck')" value="stuck" class="data-[state=on]:text-warning">
+          {{ t('transfers.filters.stuck') }}
+          <span class="ml-1 font-mono text-[11px] tnum">{{ stuckCount }}</span>
+        </ToggleGroupItem>
         <ToggleGroupItem value="done">
           {{ t('transfers.filters.done') }}
         </ToggleGroupItem>
@@ -253,6 +276,7 @@ const clear = useMutation({
           </RouterLink>
           <span class="min-w-0 truncate font-mono text-[11.5px] text-faint" :title="g.dir">{{ g.dir }}</span>
           <span class="ml-auto font-mono text-[11px] text-faint tnum">{{ g.items.length }}</span>
+          <SwitchPeerMenu v-if="g.candidateId" :candidate-id="g.candidateId" :stuck="g.stuck" />
           <Button
             v-if="possible(g.items).pause.length"
             variant="ghost"

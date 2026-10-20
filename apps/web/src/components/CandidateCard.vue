@@ -11,6 +11,7 @@ import { bytes, duration, splitPath, speed } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import FormatTag from './FormatTag.vue'
 import ScoreBreakdown from './ScoreBreakdown.vue'
+import SwitchPeerMenu from './SwitchPeerMenu.vue'
 import { serverText } from '@/lib/serverText'
 
 const props = defineProps<{
@@ -19,6 +20,8 @@ const props = defineProps<{
   busy?: boolean
   canApprove?: boolean
   received?: { done: number, total: number }
+  /** One of its downloads stopped moving */
+  stuck?: boolean
 }>()
 const emit = defineEmits<{ approve: [id: number], abandon: [id: number] }>()
 const { t } = useI18n()
@@ -93,6 +96,7 @@ const statusBadge = computed(() => {
             <ChevronDownIcon data-icon="inline-end" :class="cn('transition-transform', open && 'rotate-180')" />
           </Button>
         </CollapsibleTrigger>
+        <SwitchPeerMenu v-if="c.status === 'chosen'" :candidate-id="c.id" :stuck="stuck" size="sm" />
         <Button
           v-if="c.status === 'chosen'"
           variant="ghost"

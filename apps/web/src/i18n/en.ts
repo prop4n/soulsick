@@ -336,6 +336,13 @@ const en = {
     inTheirQueue: 'In their queue',
     inTheirQueueAt: 'In their queue · #{n}',
     requested: 'Request sent',
+    stuck: 'Stuck',
+    stuckWhy: {
+      no_progress: 'No data received since {since}.',
+      queue_frozen: 'Its place in the peer’s queue (#{place}) hasn’t moved since {since}.',
+      retrying: 'Already {n} attempts for this file.',
+    },
+    stuckAction: '“Switch peer” takes the missing tracks from someone else; what arrived is kept.',
     connectingFor: 'Connecting · {s} s',
     connectingHint: '{peer} is ready to send: waiting for their file connection to reach you. Usually a few seconds; longer, or back to the queue after 60 s, when your port isn’t reachable from the internet (and theirs isn’t either).',
     acceptedHint: '{peer} accepted the request: the file will start when your turn comes in their upload queue. Position refreshed every 90 s.',
@@ -369,7 +376,7 @@ const en = {
     clearedHint: 'Their trace stays in the journal.',
     downloads: 'Downloads',
     uploads: 'Uploads',
-    filters: { active: 'Active', done: 'Finished' },
+    filters: { active: 'Active', stuck: 'Stuck', done: 'Finished' },
     pauseAll: 'Pause all',
     resumeAll: 'Resume all',
     cancelAll: 'Cancel all',
@@ -387,6 +394,25 @@ const en = {
       download: 'Downloads started by the hunter or by hand show up here.',
       upload: 'Other peers’ requests on your shared folders show up here, with the exact file sent.',
     },
+  },
+
+  switchPeer: {
+    button: 'Switch peer',
+    hint: 'Take the tracks not received yet from another peer (what arrived is kept)',
+    loading: 'Looking for other peers…',
+    intro: 'Who has the track not received yet? | Who has the {n} tracks not received yet?',
+    none: 'No other peer found has the missing tracks.',
+    tracks: '{n}/{total} tracks',
+    freeSlot: 'free slot',
+    queue: 'queue: {n}',
+    newSearch: 'New search',
+    searching: 'Source dropped, new search started',
+    switched: 'Peer switched: {n} track requested | Peer switched: {n} tracks requested',
+  },
+
+  stuck: {
+    banner: '{n} stuck download | {n} stuck downloads',
+    bannerHint: 'No progress, frozen queue or repeated attempts: you can switch peer.',
   },
 
   library: {
@@ -717,6 +743,11 @@ const en = {
       minMatch: 'Minimum title match',
       minMatchHint: '0.6 = 60 % average similarity with the MusicBrainz tracklist.',
       extras: 'Also download covers, .cue and .log from the folder',
+      stuckIntro: 'When an album download counts as stuck. Nothing is done automatically: it is flagged, and you can switch peer.',
+      stuckNoProgress: 'Without data received (min)',
+      stuckQueue: 'Peer’s queue frozen (min)',
+      stuckAttempts: 'From attempt',
+      stuckAttemptsHint: '0 = never for repeated attempts.',
     },
     library: {
       template: 'Naming template',

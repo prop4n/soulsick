@@ -96,6 +96,7 @@ class HunterService:
 
     async def tick(self) -> None:
         await self.check_stalled()
+        await self.core.transfers.check_stuck()
         cfg = (await self.core.settings.get()).hunter
         now = datetime.now(UTC)
         if not cfg.enabled:
@@ -509,7 +510,7 @@ class HunterService:
         Tracks already received from other peers are kept; the import picks, track by track,
         the best file available.
         """
-        cover = await self.core.coverage.album(await self._rg_of(candidate_id))
+        cover = await self.core.coverage.album(await self._rg_of(candidate_id), offers=None)
         wanted = set(track_ids)
         # A peer can bring missing tracks, and better versions of tracks already shelved
         offers = [f for f in cover["fillers"] + cover["upgraders"] if f["candidate_id"] == candidate_id]
@@ -635,10 +636,30 @@ class HunterService:
     async def abandon(self, candidate_id: int) -> int:
         """You drop a source: its unfinished files are cancelled, what arrived is kept,
         and the album waits for your choice (another candidate, or a new search)."""
+        dropped = await self._drop_source(candidate_id, M("reason.abandoned"))
+        if dropped is None:
+            return 0
+        await self.core.journal.emit(
+            "download.abandoned", M("download.abandoned", label=dropped["label"], peer=dropped["username"], n=len(dropped["ids"])),
+            level="warning", release_group_id=dropped["rg_id"], candidate_id=candidate_id,
+        )
+        if not dropped["still_active"]:
+            # Nothing else downloading for this album: back to you
+            others = dropped["others"]
+            await self._set_status(
+                dropped["rg_id"],
+                AlbumStatus.PENDING_APPROVAL if others else AlbumStatus.WANTED,
+                M("reason.abandoned_pick") if others else M("reason.abandoned"),
+            )
+        return len(dropped["ids"])
+
+    async def _drop_source(self, candidate_id: int, reason: Msg) -> dict | None:
+        """Cancels the unfinished files of a source (what arrived is kept) and marks it failed.
+        The album status is left to the caller."""
         async with self.core.db.session() as s:
             c = await s.get(Candidate, candidate_id)
             if not c or c.status not in (CandidateStatus.CHOSEN, CandidateStatus.FAILED):
-                return 0
+                return None
             rg = await s.get(ReleaseGroup, c.release_group_id)
             artist = await s.get(Artist, rg.artist_id) if rg else None
             assert rg and artist
@@ -651,7 +672,7 @@ class HunterService:
                 t.error = M("reason.cancelled_by_you", n=1).text
                 t.completed_at = datetime.now(UTC)
             c.status = CandidateStatus.FAILED
-            set_reason(c, "reject_reason", M("reason.abandoned"))
+            set_reason(c, "reject_reason", reason)
             others = (await s.execute(select(func.count()).where(
                 Candidate.release_group_id == rg.id, Candidate.status == CandidateStatus.PROPOSED,
             ))).scalar_one()
@@ -659,27 +680,56 @@ class HunterService:
                 Candidate.release_group_id == rg.id, Candidate.status == CandidateStatus.CHOSEN,
             ))).scalar_one()
             await s.commit()
-            rg_id, label, username = rg.id, f"{artist.name} – {rg.title}", c.username
+            out = {
+                "rg_id": rg.id, "label": f"{artist.name} – {rg.title}", "username": c.username,
+                "ids": [t.id for t in pending], "others": others, "still_active": still_active,
+            }
             targets = [(t.username, t.remote_path) for t in pending]
-            ids = [t.id for t in pending]
-        for tid in ids:
+        for tid in out["ids"]:
             self.core.transfers.forget(tid)
         for username_, path in targets:
             await self.core.transfers.stop_on_engine(username_, path)
-        for tid in ids:
-            self.core.hub.publish("transfer", {"id": tid, "state": TransferState.ABORTED, "speed": 0})
-        await self.core.journal.emit(
-            "download.abandoned", M("download.abandoned", label=label, peer=username, n=len(ids)),
-            level="warning", release_group_id=rg_id, candidate_id=candidate_id,
-        )
-        if not still_active:
-            # Nothing else downloading for this album: back to you
-            await self._set_status(
-                rg_id,
-                AlbumStatus.PENDING_APPROVAL if others else AlbumStatus.WANTED,
-                M("reason.abandoned_pick") if others else M("reason.abandoned"),
+        for tid in out["ids"]:
+            self.core.hub.publish("transfer", {"id": tid, "state": TransferState.ABORTED, "speed": 0, "stuck": False})
+        return out
+
+    async def switch_peer(self, candidate_id: int, to: int | None = None, search: bool = False) -> int:
+        """Switches a downloading source to another peer: what arrived is kept, the tracks not received
+        yet are asked to `to` (or a new search is started). Returns the number of tracks asked."""
+        async with self.core.db.session() as s:
+            c = await s.get(Candidate, candidate_id)
+            if not c:
+                raise UserError("error.candidate_not_found")
+            if c.status != CandidateStatus.CHOSEN:
+                raise UserError("error.source_not_active")
+        track_ids: list[int] = []
+        new_peer = None
+        if not search:
+            alts = await self.core.coverage.alternatives(candidate_id)
+            target = next((a for a in alts["alternatives"] if a["candidate_id"] == to), None)
+            if target is None:
+                raise UserError("error.no_tracks_for_peer")
+            track_ids, new_peer = target["track_ids"], target["username"]
+        reason = M("reason.switched", peer=new_peer) if new_peer else M("reason.switched_search", peer=c.username)
+        dropped = await self._drop_source(candidate_id, reason)
+        if dropped is None:
+            raise UserError("error.source_not_active")
+        if search:
+            await self.core.journal.emit(
+                "download.switched_search", M("download.switched_search", label=dropped["label"], peer=dropped["username"]),
+                release_group_id=dropped["rg_id"], candidate_id=candidate_id,
             )
-        return len(ids)
+            if not dropped["still_active"]:
+                await self._set_status(dropped["rg_id"], AlbumStatus.WANTED, reason)
+            asyncio.create_task(self.hunt(dropped["rg_id"], "manual"))
+            return 0
+        assert to is not None
+        await self.core.journal.emit(
+            "download.switched",
+            M("download.switched", label=dropped["label"], old=dropped["username"], new=new_peer, n=len(track_ids)),
+            release_group_id=dropped["rg_id"], candidate_id=to,
+        )
+        return await self.complete_from(to, track_ids)
 
     async def _fail_candidate(self, candidate_id: int, reason: Msg, try_next: bool = True) -> None:
         async with self.core.db.session() as s:

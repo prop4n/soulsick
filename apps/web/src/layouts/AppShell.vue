@@ -78,7 +78,7 @@ const groups = computed<{ label: string | null, items: NavItem[] }[]>(() => [
         label: t('nav.transfers'),
         icon: ArrowLeftRightIcon,
         count: (status.value?.active_transfers.download ?? 0) + (status.value?.active_transfers.upload ?? 0),
-        tone: 'signal',
+        tone: status.value?.stuck_transfers ? 'warning' : 'signal',
       },
       { name: 'browse', label: t('nav.browse'), icon: FolderTreeIcon },
       { name: 'chat', label: t('nav.chat'), icon: MessagesSquareIcon, count: status.value?.chat_unread, tone: 'signal' },

@@ -277,6 +277,29 @@ const removeProfile = useMutation({
               {{ t('settings.hunter.extras') }}
             </FieldLabel>
           </Field>
+          <FieldSeparator />
+          <FieldDescription>{{ t('settings.hunter.stuckIntro') }}</FieldDescription>
+          <div class="grid gap-4 sm:grid-cols-3">
+            <Field>
+              <FieldLabel for="hsp">
+                {{ t('settings.hunter.stuckNoProgress') }}
+              </FieldLabel>
+              <Input id="hsp" v-model.number="form.hunter.stuck_no_progress_minutes" type="number" min="1" class="font-mono" />
+            </Field>
+            <Field>
+              <FieldLabel for="hsq">
+                {{ t('settings.hunter.stuckQueue') }}
+              </FieldLabel>
+              <Input id="hsq" v-model.number="form.hunter.stuck_queue_minutes" type="number" min="1" class="font-mono" />
+            </Field>
+            <Field>
+              <FieldLabel for="hsa">
+                {{ t('settings.hunter.stuckAttempts') }}
+              </FieldLabel>
+              <Input id="hsa" v-model.number="form.hunter.stuck_after_attempts" type="number" min="0" class="font-mono" />
+              <FieldDescription>{{ t('settings.hunter.stuckAttemptsHint') }}</FieldDescription>
+            </Field>
+          </div>
         </FieldGroup>
       </TabsContent>
 

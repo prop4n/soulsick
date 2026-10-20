@@ -91,6 +91,11 @@ const received = computed(() => {
   }
   return out
 })
+/** Sources with a download that stopped moving */
+const stuckSources = computed(() => new Set((album.value?.transfers ?? [])
+  .map(tr => ({ ...tr, ...live.transfers.get(tr.id) }))
+  .filter(tr => tr.stuck && tr.candidate_id && ['queued', 'initializing', 'transferring'].includes(tr.state!))
+  .map(tr => tr.candidate_id!)))
 const canApprove = computed(() => !!album.value && !['downloading', 'importing', 'searching'].includes(album.value.status))
 const typeLabel = computed(() => {
   const a = album.value
@@ -407,6 +412,7 @@ const dismiss = useMutation({
             :candidate="c"
             :rank="i + 1"
             :received="received[c.id]"
+            :stuck="stuckSources.has(c.id)"
             :can-approve="canApprove && ['proposed', 'failed'].includes(c.status)"
             :busy="approving === c.id || cancelling"
             @approve="approve.mutate"

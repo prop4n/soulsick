@@ -8,7 +8,7 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
-import { bytes, splitPath, speed } from '@/lib/format'
+import { ago, bytes, splitPath, speed } from '@/lib/format'
 import { transferState } from '@/lib/status'
 import { cn } from '@/lib/utils'
 import { useLive } from '@/stores/live'
@@ -44,7 +44,15 @@ const connectingFor = computed(() => {
   return since && tr.value.state === 'initializing' ? Math.max(0, Math.round((now.value - since) / 1000)) : null
 })
 
+/** Album download that stopped moving: shown first, it's what needs you */
+const stuck = computed(() => !!tr.value.stuck && running.value && tr.value.direction === 'download')
+const stuckHint = computed(() => stuck.value
+  ? t(`transfer.stuckWhy.${tr.value.stuck_reason}`, { since: ago(tr.value.stuck_since), n: tr.value.attempts, place: tr.value.place_in_queue ?? '?' })
+  : '')
+
 const st = computed(() => {
+  if (stuck.value)
+    return { label: t('transfer.stuck'), badge: 'warning' as const }
   // "Queued" alone means nothing: did the peer accept, and where are we in their queue?
   if (tr.value.direction === 'download' && tr.value.state === 'queued') {
     return tr.value.remotely_queued
@@ -78,7 +86,10 @@ const st = computed(() => {
           <span class="inline-flex"><Badge :variant="st.badge">{{ st.label }}</Badge></span>
         </TooltipTrigger>
         <TooltipContent class="max-w-64">
-          <template v-if="tr.state === 'queued' && tr.direction === 'download'">
+          <template v-if="stuck">
+            {{ stuckHint }} {{ t('transfer.stuckAction') }}
+          </template>
+          <template v-else-if="tr.state === 'queued' && tr.direction === 'download'">
             {{ tr.remotely_queued
               ? t('transfer.acceptedHint', { peer: tr.username })
               : t('transfer.requestedHint', { peer: tr.username }) }}

@@ -335,6 +335,13 @@ const fr: Messages = {
     inTheirQueue: 'Dans sa file',
     inTheirQueueAt: 'Dans sa file · #{n}',
     requested: 'Demande envoyée',
+    stuck: 'Bloqué',
+    stuckWhy: {
+      no_progress: 'Plus aucune donnée reçue depuis {since}.',
+      queue_frozen: 'Sa place dans la file du pair (#{place}) ne bouge plus depuis {since}.',
+      retrying: 'Déjà {n} essais pour ce fichier.',
+    },
+    stuckAction: '« Changer de pair » prend les pistes manquantes chez quelqu’un d’autre, ce qui est reçu est gardé.',
     connectingFor: 'Connexion · {s} s',
     connectingHint: '{peer} est prêt à envoyer : on attend que sa connexion de fichier arrive jusqu’à toi. En général quelques secondes ; plus long, ou retour dans sa file au bout de 60 s, quand ton port n’est pas joignable depuis Internet (et le sien non plus).',
     acceptedHint: '{peer} a accepté la demande : le fichier partira quand ton tour viendra dans sa file d’envoi. Position actualisée toutes les 90 s.',
@@ -368,7 +375,7 @@ const fr: Messages = {
     clearedHint: 'Leur trace reste dans le journal.',
     downloads: 'Réception',
     uploads: 'Envoi',
-    filters: { active: 'En cours', done: 'Terminés' },
+    filters: { active: 'En cours', stuck: 'Bloqués', done: 'Terminés' },
     pauseAll: 'Tout mettre en pause',
     resumeAll: 'Tout reprendre',
     cancelAll: 'Tout annuler',
@@ -386,6 +393,25 @@ const fr: Messages = {
       download: 'Les téléchargements lancés par la chasse ou à la main apparaissent ici.',
       upload: 'Les demandes des autres pairs sur tes dossiers partagés apparaissent ici, avec le fichier exact envoyé.',
     },
+  },
+
+  switchPeer: {
+    button: 'Changer de pair',
+    hint: 'Prendre les pistes pas encore reçues chez un autre pair (ce qui est arrivé est gardé)',
+    loading: 'Recherche des autres pairs…',
+    intro: 'Qui a la piste pas encore reçue ? | Qui a les {n} pistes pas encore reçues ?',
+    none: 'Aucun autre pair trouvé n’a les pistes manquantes.',
+    tracks: '{n}/{total} pistes',
+    freeSlot: 'slot libre',
+    queue: 'file : {n}',
+    newSearch: 'Nouvelle recherche',
+    searching: 'Source abandonnée, nouvelle recherche lancée',
+    switched: 'Changement de pair : {n} piste demandée | Changement de pair : {n} pistes demandées',
+  },
+
+  stuck: {
+    banner: '{n} téléchargement bloqué | {n} téléchargements bloqués',
+    bannerHint: 'Plus de progression, file figée ou essais répétés : tu peux changer de pair.',
   },
 
   library: {
@@ -716,6 +742,11 @@ const fr: Messages = {
       minMatch: 'Correspondance minimale des titres',
       minMatchHint: '0,6 = 60 % de ressemblance moyenne avec la tracklist MusicBrainz.',
       extras: 'Télécharger aussi pochettes, .cue et .log du dossier',
+      stuckIntro: 'Quand un téléchargement d’album compte comme bloqué. Rien n’est fait automatiquement : il est signalé, et tu peux changer de pair.',
+      stuckNoProgress: 'Sans donnée reçue (min)',
+      stuckQueue: 'File du pair figée (min)',
+      stuckAttempts: 'À partir de l’essai',
+      stuckAttemptsHint: '0 = jamais pour les essais répétés.',
     },
     library: {
       template: 'Modèle de rangement',

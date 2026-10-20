@@ -490,6 +490,32 @@ async def abandon_candidate(cid: int, core: Core = Depends(get_core)) -> dict:
     return {"ok": True, "cancelled": await core.hunter.abandon(cid)}
 
 
+@router.get("/candidates/{cid}/alternatives")
+async def candidate_alternatives(cid: int, core: Core = Depends(get_core)) -> dict:
+    """Other peers that have the tracks this source has not delivered yet."""
+    try:
+        return await core.coverage.alternatives(cid)
+    except MusicBrainzError as e:
+        raise HTTPException(502, str(e)) from e
+
+
+class SwitchIn(BaseModel):
+    to: int | None = None
+    search: bool = False
+
+
+@router.post("/candidates/{cid}/switch")
+async def switch_peer(cid: int, body: SwitchIn, core: Core = Depends(get_core)) -> dict:
+    """Replace a source that is stuck: what arrived is kept, the rest comes from another peer."""
+    if body.to is None and not body.search:
+        raise HTTPException(422, "to or search required")
+    try:
+        n = await core.hunter.switch_peer(cid, to=body.to, search=body.search)
+    except (ValueError, EngineUnavailable) as e:
+        raise as_http(e) from e
+    return {"ok": True, "files": n}
+
+
 @router.post("/albums/{rid}/cancel")
 async def cancel_album(rid: int, core: Core = Depends(get_core)) -> dict:
     """Stop downloading this album: every active source is dropped (received files are kept)."""

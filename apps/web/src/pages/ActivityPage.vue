@@ -5,6 +5,7 @@ import { useRoute, useRouter } from 'vue-router'
 import JournalPanel from '@/components/JournalPanel.vue'
 import LogsPanel from '@/components/LogsPanel.vue'
 import PageHeader from '@/components/PageHeader.vue'
+import StuckBanner from '@/components/StuckBanner.vue'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { useLive } from '@/stores/live'
 
@@ -23,6 +24,7 @@ onUnmounted(() => (live.unseenProblems = 0))
 <template>
   <div class="flex flex-col">
     <PageHeader :title="t('activity.title')" :description="t(`activity.${tab}.description`)" />
+    <StuckBanner class="mb-5" />
     <Tabs v-model="tab" class="gap-5">
       <TabsList>
         <TabsTrigger value="journal">
