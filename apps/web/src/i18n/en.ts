@@ -398,6 +398,7 @@ const en = {
 
   switchPeer: {
     button: 'Switch peer',
+    buttonPeer: 'Replace {peer}',
     hint: 'Take the tracks not received yet from another peer (what arrived is kept)',
     loading: 'Looking for other peers…',
     intro: 'Who has the track not received yet? | Who has the {n} tracks not received yet?',

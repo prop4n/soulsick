@@ -397,6 +397,7 @@ const fr: Messages = {
 
   switchPeer: {
     button: 'Changer de pair',
+    buttonPeer: 'Remplacer {peer}',
     hint: 'Prendre les pistes pas encore reçues chez un autre pair (ce qui est arrivé est gardé)',
     loading: 'Recherche des autres pairs…',
     intro: 'Qui a la piste pas encore reçue ? | Qui a les {n} pistes pas encore reçues ?',

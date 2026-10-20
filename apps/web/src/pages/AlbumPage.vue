@@ -8,6 +8,7 @@ import { useI18n } from 'vue-i18n'
 import { useRoute } from 'vue-router'
 import { toast } from 'vue-sonner'
 import CandidateCard from '@/components/CandidateCard.vue'
+import SwitchPeerMenu from '@/components/SwitchPeerMenu.vue'
 import CoverArt from '@/components/CoverArt.vue'
 import CoverBackdrop from '@/components/CoverBackdrop.vue'
 import EventFeed from '@/components/EventFeed.vue'
@@ -159,7 +160,8 @@ async function cancelDownload(cid?: number) {
     cancelling.value = false
   }
 }
-const downloading = computed(() => !!album.value?.candidates.some(c => c.status === 'chosen'))
+const activeSources = computed(() => (album.value?.candidates ?? []).filter(c => c.status === 'chosen'))
+const downloading = computed(() => activeSources.value.length > 0)
 /** Everything received or already shelved, but the album isn't shelved yet: import can run now */
 const importable = computed(() => {
   const s = coverage.value?.summary
@@ -242,6 +244,15 @@ const dismiss = useMutation({
                 <FolderInputIcon data-icon="inline-start" />
                 {{ t('album.importNow') }}
               </Button>
+              <!-- Switch the active source to another candidate, right from here -->
+              <SwitchPeerMenu
+                v-for="c in activeSources"
+                :key="c.id"
+                :candidate-id="c.id"
+                :stuck="stuckSources.has(c.id)"
+                :peer="activeSources.length > 1 ? c.username : undefined"
+                size="sm"
+              />
               <Button
                 v-if="downloading"
                 variant="ghost"

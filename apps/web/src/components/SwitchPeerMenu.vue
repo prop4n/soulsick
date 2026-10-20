@@ -17,7 +17,10 @@ import FormatTag from './FormatTag.vue'
  * Replace a source that doesn't deliver: lists the other peers that have the tracks not received
  * yet (best first). What already arrived is kept.
  */
-const props = withDefaults(defineProps<{ candidateId: number, stuck?: boolean, size?: 'xs' | 'sm' }>(), { stuck: false, size: 'xs' })
+const props = withDefaults(
+  defineProps<{ candidateId: number, stuck?: boolean, size?: 'xs' | 'sm', /** shown when several sources are active */ peer?: string }>(),
+  { stuck: false, size: 'xs', peer: undefined },
+)
 const { t } = useI18n()
 const qc = useQueryClient()
 const open = ref(false)
@@ -59,7 +62,7 @@ async function choose(to: number | 'search') {
         :title="t('switchPeer.hint')"
       >
         <ArrowLeftRightIcon data-icon="inline-start" />
-        {{ t('switchPeer.button') }}
+        {{ peer ? t('switchPeer.buttonPeer', { peer }) : t('switchPeer.button') }}
       </Button>
     </PopoverTrigger>
     <PopoverContent align="end" class="w-80 p-1.5">
