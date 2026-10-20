@@ -71,7 +71,7 @@ export const useLive = defineStore('live', () => {
           unseenProblems.value++
         invalidate('events', 'status')
         if (msg.data.release_group_id)
-          invalidate('album', 'albums', 'artist')
+          invalidate('album', 'albums', 'artist', 'plan')
         if (msg.data.kind.startsWith('artist') || msg.data.kind.startsWith('musicbrainz'))
           invalidate('artists', 'artist')
         if (msg.data.kind.startsWith('share'))

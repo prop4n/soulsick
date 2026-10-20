@@ -35,15 +35,47 @@ const { data, isPending } = useQuery({
 
 const releaseId = ref<string>('')
 const mapping = ref<Record<string, string>>({})
+// The plan is refreshed as the album moves on (files received, source switched).
+// What you changed by hand survives a refresh; the rest follows the server.
+const edited = new Set<string>()
+let editionPicked = false
+
+const release = computed(() => props.releases.find(r => String(r.id) === releaseId.value))
+
+/** The server's mapping, or, once you picked an edition, each file re-mapped by position into it */
+function proposed(d: PlanResponse): Record<string, string> {
+  if (editionPicked && release.value) {
+    const byPos = new Map(release.value.tracks.map(t => [`${t.disc}-${t.position}`, String(t.id)]))
+    return Object.fromEntries(d.plan.map(p => [p.file, (p.disc && p.position && byPos.get(`${p.disc}-${p.position}`)) || 'skip']))
+  }
+  return Object.fromEntries(d.plan.map(p => [p.file, p.track_id ? String(p.track_id) : 'skip']))
+}
 
 watch(data, (d) => {
   if (!d)
     return
-  releaseId.value = d.info.release_id ? String(d.info.release_id) : String(props.releases[0]?.id ?? '')
-  mapping.value = Object.fromEntries(d.plan.map(p => [p.file, p.track_id ? String(p.track_id) : 'skip']))
+  if (!editionPicked)
+    releaseId.value = d.info.release_id ? String(d.info.release_id) : String(props.releases[0]?.id ?? '')
+  const next = proposed(d)
+  for (const f of edited) {
+    if (f in next && mapping.value[f] !== undefined)
+      next[f] = mapping.value[f]
+  }
+  mapping.value = next
 }, { immediate: true })
 
-const release = computed(() => props.releases.find(r => String(r.id) === releaseId.value))
+function pickEdition(v: unknown) {
+  releaseId.value = String(v)
+  editionPicked = true
+  edited.clear()
+  if (data.value)
+    mapping.value = proposed(data.value)
+}
+
+function pickTrack(file: string, v: unknown) {
+  mapping.value[file] = String(v)
+  edited.add(file)
+}
 const used = computed(() => new Set(Object.values(mapping.value).filter(v => v !== 'skip')))
 const missing = computed(() => (release.value?.tracks ?? []).filter(t => !used.value.has(String(t.id))))
 const duplicates = computed(() => {
@@ -53,15 +85,6 @@ const duplicates = computed(() => {
       seen.set(v, (seen.get(v) ?? 0) + 1)
   }
   return new Set([...seen.entries()].filter(([, n]) => n > 1).map(([k]) => k))
-})
-
-watch(releaseId, (_, before) => {
-  // Switching edition: re-map by position when possible
-  if (!before || !release.value || !data.value)
-    return
-  const byPos = new Map(release.value.tracks.map(t => [`${t.disc}-${t.position}`, String(t.id)]))
-  for (const p of data.value.plan)
-    mapping.value[p.file] = (p.disc && p.position && byPos.get(`${p.disc}-${p.position}`)) || 'skip'
 })
 
 const apply = useMutation({
@@ -109,7 +132,7 @@ function trackLabel(id: string) {
     <template v-else-if="data">
       <div class="flex flex-col gap-1.5">
         <span class="legend">{{ t('review.edition') }}</span>
-        <Select v-model="releaseId">
+        <Select :model-value="releaseId" @update:model-value="pickEdition">
           <SelectTrigger class="w-full sm:max-w-xl">
             <SelectValue />
           </SelectTrigger>
@@ -135,7 +158,7 @@ function trackLabel(id: string) {
             <span class="shrink-0 font-mono text-[11px] text-faint tnum">{{ duration(p.duration) }}</span>
           </div>
           <span class="hidden text-faint sm:block">→</span>
-          <Select v-model="mapping[p.file]">
+          <Select :model-value="mapping[p.file]" @update:model-value="(v) => pickTrack(p.file, v)">
             <SelectTrigger
               size="sm"
               :class="cn('w-full', mapping[p.file] === 'skip' && 'text-faint', duplicates.has(mapping[p.file] ?? '') && 'border-destructive/60')"
