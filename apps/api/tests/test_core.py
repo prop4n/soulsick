@@ -102,8 +102,9 @@ def test_rank_candidates_prefers_flac_and_rejects_with_reason():
     assert cands[0].username == "flacuser"
     assert not by_user["mp3user"].rejected
     assert by_user["flacuser"].score > by_user["mp3user"].score
-    assert "non autorisé" in by_user["lowuser"].reject_reason
-    assert "manquante" in by_user["partial"].reject_reason
+    assert by_user["lowuser"].reject_reason.key == "reject.format_refused"
+    assert by_user["partial"].reject_reason.key == "reject.missing_tracks"
+    assert "not allowed" in by_user["lowuser"].reject_reason.text
     assert by_user["flacuser"].detail["match"]["tracks_matched"] == 3
 
 

@@ -3,7 +3,7 @@ import { computed } from 'vue'
 import { splitPath } from '@/lib/format'
 import { cn } from '@/lib/utils'
 
-/** Chemin en mono : dossier atténué, nom de fichier lisible. Le chemin complet est sélectionnable. */
+/** Monospace path: dimmed folder, readable file name. The full path is selectable. */
 const props = defineProps<{ path: string | null | undefined, class?: string, dirOnly?: boolean }>()
 const parts = computed(() => splitPath(props.path ?? ''))
 </script>

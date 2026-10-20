@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING
 
 from sqlalchemy import select
 
+from ..messages import M
 from ..models import Share
 from ..slsk.rules import ShareRules, scan_share
 
@@ -50,8 +51,7 @@ class ShareService:
         total = sum(sh.file_count for sh in shares if sh.enabled)
         await self.core.journal.emit(
             "shares.applied",
-            f"Partages mis à jour : {len(rules)} dossier(s) exposé(s) au réseau"
-            + (f", {total} fichiers dans les dossiers configurés" if shares else ""),
+            M("shares.applied_files", n=len(rules), files=total) if shares else M("shares.applied", n=len(rules)),
             data={"paths": [r.path for r in rules]},
         )
 

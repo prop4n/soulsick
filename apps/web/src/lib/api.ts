@@ -1,3 +1,5 @@
+import { serverText } from './serverText'
+
 export class ApiError extends Error {
   status: number
   constructor(status: number, message: string) {
@@ -24,6 +26,9 @@ async function request<T>(method: string, url: string, body?: unknown): Promise<
       const data = await res.json()
       if (typeof data.detail === 'string')
         message = data.detail
+      // Translatable error: { message (English), key, params }
+      else if (data.detail && typeof data.detail.message === 'string')
+        message = serverText(data.detail.message, data.detail)
       else if (Array.isArray(data.detail))
         message = data.detail.map((d: { msg: string }) => d.msg).join(', ')
     }

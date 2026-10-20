@@ -54,7 +54,7 @@ def read_meta(path: str | Path) -> AudioMeta:
     try:
         raw = mutagen.File(path)
     except Exception as e:
-        log.debug("lecture %s : %s", path, e)
+        log.debug("reading %s: %s", path, e)
         return meta
     if raw is None:
         return meta
@@ -239,4 +239,4 @@ def write_tags(path: str | Path, t: TagSet, cover: bytes | None = None) -> None:
         f.save()
         return
 
-    log.info("écriture des tags non gérée pour .%s : %s", ext, path)
+    log.info("tag writing not supported for .%s: %s", ext, path)

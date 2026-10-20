@@ -14,7 +14,7 @@ async def test_logs_classes_par_source(ctx):  # noqa: F811
     by_msg = {r["message"]: r for r in data["logs"]}
     assert by_msg["failed to fulfill ConnectToPeer request : test"]["source"] == "soulseek"
     assert by_msg["failed to fulfill ConnectToPeer request : test"]["level"] == "warning"
-    assert by_msg["« test » +1.2s : bob répond — 3 fichier(s)"]["source"] == "recherche"
+    assert by_msg["« test » +1.2s : bob répond — 3 fichier(s)"]["source"] == "search"
     last = data["logs"][-1]["id"]
     newer = (await client.get("/api/logs", params={"after": last})).json()["logs"]
     assert all(r["id"] > last for r in newer), "seulement les lignes plus récentes"

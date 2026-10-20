@@ -1,13 +1,15 @@
 <script setup lang="ts">
 import type { AlbumStatus } from '@/lib/types'
+import { computed } from 'vue'
 import { Badge } from '@/components/ui/badge'
-import { ALBUM_STATUS } from '@/lib/status'
+import { albumStatus } from '@/lib/status'
 
-defineProps<{ status: AlbumStatus }>()
+const props = defineProps<{ status: AlbumStatus }>()
+const info = computed(() => albumStatus(props.status))
 </script>
 
 <template>
-  <Badge :variant="ALBUM_STATUS[status].badge">
-    {{ ALBUM_STATUS[status].label }}
+  <Badge :variant="info.badge">
+    {{ info.label }}
   </Badge>
 </template>

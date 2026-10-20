@@ -1,3 +1,5 @@
+import type { ServerMsg } from './serverText'
+
 export type AlbumStatus =
   | 'ignored'
   | 'wanted'
@@ -17,6 +19,10 @@ export interface EngineStatus {
   connecting: boolean
   username: string | null
   error: string | null
+  error_t?: ServerMsg | null
+  listen_port?: number | null
+  /** Port opened by the VPN (gluetun), when Soulsick runs behind it */
+  forwarded_port?: number | null
   download_speed: number
   upload_speed: number
   free_upload_slots: number
@@ -39,6 +45,9 @@ export interface AppStatus {
   albums: Partial<Record<AlbumStatus, number>>
   attention: number
   active_transfers: { download: number, upload: number }
+  chat_unread: number
+  storage: StorageLevel
+  library_guard: LibraryGuard
   paths: { music: string, downloads: string, config: string }
 }
 
@@ -90,6 +99,10 @@ export interface ReleaseGroup {
   monitored: boolean
   status: AlbumStatus
   status_reason: string | null
+  status_reason_t?: ServerMsg | null
+  /** Tracks of this album in the library / tracks of its edition (partial album when lower) */
+  present_tracks?: number | null
+  total_tracks?: number | null
   selected_release_id: number | null
   imported_format: string | null
   imported_path: string | null
@@ -185,6 +198,7 @@ export interface Candidate {
   score_detail: ScoreDetail
   status: 'proposed' | 'rejected' | 'chosen' | 'downloaded' | 'failed' | 'imported'
   reject_reason: string | null
+  reject_reason_t?: ServerMsg | null
   matched_release_id: number | null
   has_free_slots: boolean
   queue_size: number
@@ -316,7 +330,7 @@ export interface SharePreview {
   included: number
   included_size?: number
   excluded: number
-  excluded_samples: { path: string, reason: string }[]
+  excluded_samples: { path: string, reason: string, reason_t?: ServerMsg }[]
   extensions: Record<string, number>
   effective_extensions?: string[]
 }
@@ -370,8 +384,11 @@ export interface CoverageTrack {
   position: number
   title: string
   length_ms: number | null
-  state: 'received' | 'downloading' | 'missing' | 'in_library'
+  state: 'received' | 'downloading' | 'paused' | 'missing' | 'in_library'
   sources: CoverageSource[]
+  /** Format of the shelved file; `upgrade` when it is below the rest of the album */
+  library_format?: string | null
+  upgrade?: boolean
 }
 
 export interface CoverageFiller {
@@ -384,16 +401,18 @@ export interface CoverageFiller {
   has_free_slots: boolean
   queue_size: number
   avg_speed: number
-  tracks: { track_id: number, title: string, filename: string, format: string | null }[]
+  tracks: { track_id: number, title: string, filename: string, format: string | null, from_format?: string | null }[]
 }
 
 export interface Coverage {
   release_id: number | null
   release_title?: string
   tracks: CoverageTrack[]
-  summary: { received: number, downloading: number, missing: number, in_library: number, total: number }
+  summary: { received: number, downloading: number, paused?: number, missing: number, in_library: number, total: number, upgrade?: number }
   received_formats?: string[]
   fillers: CoverageFiller[]
+  /** Peers having better versions of the tracks to upgrade */
+  upgraders?: CoverageFiller[]
 }
 
 export interface LogLine {
@@ -422,4 +441,139 @@ export interface Activity {
   library_scanning: boolean
   retrying: number
   engine: EngineStatus
+}
+
+export interface ExistingProposal {
+  release_group_mbid: string
+  release_mbid: string
+  title: string
+  artist_name: string
+  artist_mbid: string
+  date: string | null
+  release_title: string
+  release_info: string
+  track_count: number
+  confidence: number
+  matched: number
+  mapping: { file: string, name: string, track_mbid: string | null, track: string | null }[]
+  unmatched_files: string[]
+  missing_tracks: string[]
+  destination: string | null
+  safe: boolean
+  partial?: boolean
+  file_confidence?: number
+}
+
+export interface ExistingGroup {
+  dir: string
+  files: number
+  size: number
+  format: string | null
+  guess: { artist: string, album: string }
+  result: { proposals: ExistingProposal[], query?: { artist: string, album: string }, error?: string } | null
+}
+
+export type ChatKind = 'private' | 'room'
+
+export interface ChatMessage {
+  id: number
+  ts: string
+  kind: ChatKind
+  target: string
+  username: string
+  text: string
+  outgoing: boolean
+  read: boolean
+}
+
+export interface ChatConversation {
+  kind: ChatKind
+  target: string
+  last: ChatMessage | null
+  unread: number
+}
+
+export interface ChatOverview {
+  conversations: ChatConversation[]
+  rooms: string[]
+  unread_private: number
+  me: string | null
+}
+
+export interface ChatRoomInfo { name: string, users: number, private: boolean }
+
+export type StorageLevel = 'ok' | 'low' | 'critical'
+
+/** Library folder check: imports wait while it is missing, not mounted or suddenly empty. */
+export interface LibraryGuard {
+  ok: boolean
+  path: string
+  problem: string | null
+  problem_t: ServerMsg | null
+  warnings: string[]
+  warnings_t: ServerMsg[]
+}
+
+export interface StorageFolder { key: 'music' | 'downloads' | 'config' | 'share', path: string, size: number, missing?: boolean }
+
+export interface StorageDisk {
+  id: number
+  mount: string | null
+  total: number
+  used: number
+  free: number
+  level: StorageLevel
+  soulsick: number
+  folders: StorageFolder[]
+}
+
+/** Album only partly in the library (e.g. a single track shelved by hand) */
+export function isPartial(a: { present_tracks?: number | null, total_tracks?: number | null }): boolean {
+  return !!a.total_tracks && (a.present_tracks ?? 0) < a.total_tracks
+}
+
+/** What we exchanged with a peer (GET /peers/:username). */
+export interface PeerTotals { files: number, complete: number, failed: number, bytes: number, first: string | null, last: string | null }
+export interface PeerAlbum {
+  id: number
+  mbid: string
+  title: string
+  artist: string
+  artist_id: number
+  year: string | null
+  candidate_status: 'chosen' | 'downloaded' | 'failed' | 'imported'
+  album_status: AlbumStatus
+  format: string | null
+  date: string | null
+}
+export interface PeerHistory {
+  username: string
+  downloads: PeerTotals | null
+  uploads: PeerTotals | null
+  measured_speed: number | null
+  albums: PeerAlbum[]
+  proposals: number
+  messages: { count: number, last: string | null }
+  recent: Transfer[]
+}
+
+/** What the network says about a peer (GET /peers/:username/profile); every part may be missing. */
+export interface PeerProfile {
+  username: string
+  status: 'online' | 'away' | 'offline' | null
+  privileged: boolean | null
+  reachable: boolean
+  country: string | null
+  avg_speed?: number
+  uploads?: number
+  shared_files?: number
+  shared_folders?: number
+  description?: string | null
+  picture?: string | null
+  has_free_slots?: boolean
+  upload_slots?: number
+  queue_size?: number
+  upload_permissions?: string
+  interests?: string[]
+  hated_interests?: string[]
 }

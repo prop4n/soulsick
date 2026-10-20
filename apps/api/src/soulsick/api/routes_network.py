@@ -1,28 +1,47 @@
 import asyncio
 import os
 import time
+from typing import Literal
 
+from aioslsk.exceptions import NetworkError, NoSuchUserError
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy import delete, desc, select
 
 from ..core import Core
-from ..models import Share, Transfer
+from ..messages import M
+from ..models import Share, Transfer, TransferState
 from ..scoring import group_results
 from ..services.transfers import TERMINAL, transfer_to_dict
 from ..slsk.engine import EngineUnavailable
 from ..slsk.rules import forbidden_share_reason
 from .deps import get_core, require_user
+from .errors import as_http, http_error
 from .serializers import share_dict
 
 router = APIRouter(prefix="/api", tags=["network"], dependencies=[Depends(require_user)])
 
 
-def _unavailable(e: Exception) -> HTTPException:
-    return HTTPException(503, str(e))
+
+# --- Peers -------------------------------------------------------------------------
 
 
-# --- Recherche manuelle -----------------------------------------------------------
+@router.get("/peers/{username}")
+async def peer_history(username: str, core: Core = Depends(get_core)) -> dict:
+    """What we exchanged with this peer: files received and sent, albums, messages."""
+    return await core.peers.history(username)
+
+
+@router.get("/peers/{username}/profile")
+async def peer_profile(username: str, refresh: bool = False, core: Core = Depends(get_core)) -> dict:
+    """What the network says about this peer (status, stats, description, picture, interests)."""
+    try:
+        return await core.peers.profile(username, refresh=refresh)
+    except EngineUnavailable as e:
+        raise as_http(e) from e
+
+
+# --- Manual search ----------------------------------------------------------------
 
 
 class SearchIn(BaseModel):
@@ -34,8 +53,8 @@ async def start_search(body: SearchIn, core: Core = Depends(get_core)) -> dict:
     try:
         live = await core.engine.start_search(body.query)
     except EngineUnavailable as e:
-        raise _unavailable(e) from e
-    await core.journal.emit("search.manual", f"Recherche manuelle « {body.query} »", data={"ticket": live.ticket})
+        raise as_http(e) from e
+    await core.journal.emit("search.manual", M("search.manual", query=body.query), data={"ticket": live.ticket})
     return {"ticket": live.ticket, "query": live.query}
 
 
@@ -43,7 +62,7 @@ async def start_search(body: SearchIn, core: Core = Depends(get_core)) -> dict:
 async def get_search(ticket: int, core: Core = Depends(get_core)) -> dict:
     live = core.engine.searches.get(ticket)
     if not live:
-        raise HTTPException(404, "Recherche expirée")
+        raise http_error(404, "error.search_expired")
     groups = group_results(live.results)
     folders = []
     for g in groups:
@@ -84,13 +103,13 @@ async def download(body: DownloadIn, core: Core = Depends(get_core)) -> dict:
     try:
         ids = await core.transfers.download_manual(body.username, body.files)
     except EngineUnavailable as e:
-        raise _unavailable(e) from e
+        raise as_http(e) from e
     except ValueError as e:
-        raise HTTPException(400, str(e)) from e
+        raise as_http(e) from e
     return {"ids": ids}
 
 
-# --- Transferts -------------------------------------------------------------------
+# --- Transfers --------------------------------------------------------------------
 
 
 @router.get("/transfers")
@@ -110,22 +129,50 @@ async def _get_transfer(core: Core, tid: int) -> Transfer:
     async with core.db.session() as s:
         t = await s.get(Transfer, tid)
     if not t:
-        raise HTTPException(404)
+        raise http_error(404, "error.transfer_not_found")
     return t
 
 
 @router.post("/transfers/{tid}/cancel")
 async def cancel_transfer(tid: int, core: Core = Depends(get_core)) -> dict:
     t = await _get_transfer(core, tid)
-    try:
-        await core.engine.abort(t.username, t.remote_path, t.direction)
-    except EngineUnavailable as e:
-        raise _unavailable(e) from e
+    if not await core.transfers.cancel(tid):
+        return {"ok": False}
     await core.journal.emit(
-        "transfer.cancelled", f"Transfert annulé par toi : {t.remote_path} ({t.username})", transfer_id=tid,
+        "transfer.cancelled", M("transfer.cancelled", path=t.remote_path, peer=t.username), transfer_id=tid,
         release_group_id=t.release_group_id,
     )
     return {"ok": True}
+
+
+@router.post("/transfers/{tid}/pause")
+async def pause_transfer(tid: int, core: Core = Depends(get_core)) -> dict:
+    t = await _get_transfer(core, tid)
+    try:
+        changed = await core.transfers.pause(tid)
+    except EngineUnavailable as e:
+        raise as_http(e) from e
+    if changed:
+        await core.journal.emit(
+            "transfer.paused", M("transfer.paused", name=t.remote_path.replace(chr(92), "/").rsplit("/", 1)[-1], peer=t.username),
+            transfer_id=tid, release_group_id=t.release_group_id, candidate_id=t.candidate_id,
+        )
+    return {"ok": changed}
+
+
+@router.post("/transfers/{tid}/resume")
+async def resume_transfer(tid: int, core: Core = Depends(get_core)) -> dict:
+    t = await _get_transfer(core, tid)
+    try:
+        changed = await core.transfers.resume(tid)
+    except EngineUnavailable as e:
+        raise as_http(e) from e
+    if changed:
+        await core.journal.emit(
+            "transfer.resumed", M("transfer.resumed", name=t.remote_path.replace(chr(92), "/").rsplit("/", 1)[-1], peer=t.username),
+            transfer_id=tid, release_group_id=t.release_group_id, candidate_id=t.candidate_id,
+        )
+    return {"ok": changed}
 
 
 @router.post("/transfers/{tid}/retry")
@@ -136,21 +183,74 @@ async def retry_transfer(tid: int, core: Core = Depends(get_core)) -> dict:
     try:
         await core.transfers.requeue(tid, reset_attempts=True)
     except EngineUnavailable as e:
-        raise _unavailable(e) from e
+        raise as_http(e) from e
     if t.candidate_id:
-        # Le candidat redevient actif : à l'arrivée du fichier, l'album sera importé
-        await core.hunter.reactivate(t.candidate_id, "nouvel essai demandé par toi")
+        # The candidate becomes active again: once the file arrives, the album gets imported
+        await core.hunter.reactivate(t.candidate_id, M("reason.retry_by_you"))
     name = t.remote_path.replace("\\", "/").rsplit("/", 1)[-1]
     await core.journal.emit(
-        "transfer.retried", f"Nouvel essai demandé par toi : « {name} » chez {t.username}",
+        "transfer.retried", M("transfer.retried", name=name, peer=t.username),
         transfer_id=tid, release_group_id=t.release_group_id, candidate_id=t.candidate_id,
     )
     return {"ok": True}
 
 
+class BatchIn(BaseModel):
+    ids: list[int] = Field(min_length=1, max_length=5000)
+    action: Literal["cancel", "pause", "resume", "retry"]
+
+
+@router.post("/transfers/batch")
+async def batch(body: BatchIn, core: Core = Depends(get_core)) -> dict:
+    """One action on many transfers. Cancelling every unfinished file of an album source drops
+    that source cleanly (what arrived is kept, nothing restarts elsewhere on its own)."""
+    async with core.db.session() as s:
+        rows = list((await s.execute(select(Transfer).where(Transfer.id.in_(body.ids)))).scalars())
+    done = 0
+    if body.action == "cancel":
+        open_rows = [t for t in rows if t.state not in TERMINAL]
+        chosen = {t.id for t in open_rows}
+        by_cand: dict[int, list[Transfer]] = {}
+        for t in open_rows:
+            if t.candidate_id:
+                by_cand.setdefault(t.candidate_id, []).append(t)
+        handled: set[int] = set()
+        for cid in by_cand:
+            async with core.db.session() as s:
+                unfinished = set((await s.execute(select(Transfer.id).where(
+                    Transfer.candidate_id == cid, Transfer.state.not_in(list(TERMINAL)),
+                ))).scalars())
+            if unfinished and unfinished <= chosen:
+                done += await core.hunter.abandon(cid)
+                handled |= unfinished
+        for t in open_rows:
+            if t.id not in handled and await core.transfers.cancel(t.id):
+                done += 1
+        if done:
+            await core.journal.emit("transfer.cancelled_many", M("transfer.cancelled_many", n=done))
+        return {"ok": True, "done": done}
+
+    for t in rows:
+        try:
+            if body.action == "pause":
+                done += await core.transfers.pause(t.id)
+            elif body.action == "resume":
+                done += await core.transfers.resume(t.id)
+            elif t.direction == "download" and t.state in (TransferState.FAILED, TransferState.ABORTED):
+                await core.transfers.requeue(t.id, reset_attempts=True)
+                if t.candidate_id:
+                    await core.hunter.reactivate(t.candidate_id, M("reason.retry_by_you"))
+                done += 1
+        except EngineUnavailable as e:
+            raise as_http(e) from e
+    if done:
+        await core.journal.emit(f"transfer.{body.action}_many", M(f"transfer.{body.action}_many", n=done))
+    return {"ok": True, "done": done}
+
+
 @router.post("/transfers/clear")
 async def clear_transfers(direction: str = "download", core: Core = Depends(get_core)) -> dict:
-    """Retire de la liste les transferts terminés (l'historique reste dans le journal)."""
+    """Removes finished transfers from the list (history stays in the journal)."""
     async with core.db.session() as s:
         res = await s.execute(
             delete(Transfer).where(Transfer.direction == direction, Transfer.state.in_(list(TERMINAL)))
@@ -159,7 +259,7 @@ async def clear_transfers(direction: str = "download", core: Core = Depends(get_
     return {"removed": res.rowcount}
 
 
-# --- Parcourir un pair -----------------------------------------------------------
+# --- Browse a peer ----------------------------------------------------------------
 
 
 @router.get("/users/{username}/browse")
@@ -167,17 +267,24 @@ async def browse(username: str, core: Core = Depends(get_core)) -> dict:
     try:
         data = await core.engine.browse(username)
     except EngineUnavailable as e:
-        raise _unavailable(e) from e
+        raise as_http(e) from e
     except TimeoutError as e:
-        raise HTTPException(504, f"{username} n'a pas répondu (hors ligne ou injoignable)") from e
+        raise http_error(504, "error.peer_no_answer", peer=username) from e
+    except NoSuchUserError as e:
+        raise http_error(404, "error.peer_unknown", peer=username) from e
+    except NetworkError as e:
+        # No connection either way: tell an offline peer from one that can't be reached
+        status = await core.engine.user_status(username)
+        key = "error.peer_offline" if status == "offline" else "error.peer_unreachable"
+        raise http_error(502, key, peer=username) from e
     await core.journal.emit(
-        "browse", f"Partages de {username} parcourus : {len(data['directories'])} dossiers",
+        "browse", M("browse", peer=username, n=len(data["directories"])),
         data={"username": username},
     )
     return data
 
 
-# --- Partages --------------------------------------------------------------------
+# --- Shares -----------------------------------------------------------------------
 
 
 class ShareIn(BaseModel):
@@ -208,18 +315,18 @@ async def list_shares(core: Core = Depends(get_core)) -> dict:
 async def create_share(body: ShareIn, core: Core = Depends(get_core)) -> dict:
     path = os.path.abspath(body.path)
     if not os.path.isdir(path):
-        raise HTTPException(400, f"Dossier introuvable dans le conteneur : {path}")
+        raise http_error(400, "error.folder_missing", path=path)
     reason = forbidden_share_reason(path, [str(core.env.config_dir), str(core.env.downloads_dir)])
     if reason:
-        raise HTTPException(400, reason)
+        raise http_error(400, reason)
     async with core.db.session() as s:
         if (await s.execute(select(Share).where(Share.path == path))).scalar_one_or_none():
-            raise HTTPException(409, "Ce dossier est déjà partagé")
+            raise http_error(409, "error.already_shared")
         sh = Share(**(body.model_dump() | {"path": path}))
         s.add(sh)
         await s.commit()
         await s.refresh(sh)
-    await core.journal.emit("share.added", f"Dossier partagé ajouté : {path}", data=body.model_dump())
+    await core.journal.emit("share.added", M("share.added", path=path), data=body.model_dump())
     asyncio.create_task(core.shares.rescan())
     return share_dict(sh)
 
@@ -236,9 +343,11 @@ async def update_share(sid: int, body: ShareIn, core: Core = Depends(get_core)) 
         await s.commit()
     await core.journal.emit(
         "share.updated",
-        f"Règles du partage {sh.path} modifiées : "
-        f"{'actif' if body.enabled else 'désactivé'}, extensions {', '.join(body.allowed_extensions) or 'par défaut'}, "
-        f"exclusions {', '.join(body.exclude_patterns) or 'aucune'}",
+        M(
+            "share.updated", path=sh.path, state=M("word.enabled" if body.enabled else "word.disabled"),
+            extensions=", ".join(body.allowed_extensions) or M("word.default"),
+            excludes=", ".join(body.exclude_patterns) or M("word.none"),
+        ),
         data=body.model_dump(),
     )
     asyncio.create_task(core.shares.rescan())
@@ -252,7 +361,7 @@ async def delete_share(sid: int, core: Core = Depends(get_core)) -> dict:
         if sh:
             await s.delete(sh)
             await s.commit()
-            await core.journal.emit("share.removed", f"Dossier retiré des partages : {sh.path}")
+            await core.journal.emit("share.removed", M("share.removed", path=sh.path))
     asyncio.create_task(core.shares.rescan())
     return {"ok": True}
 
@@ -273,7 +382,7 @@ async def rescan(core: Core = Depends(get_core)) -> dict:
 
 @router.get("/fs")
 async def list_dirs(path: str = "/", core: Core = Depends(get_core)) -> dict:
-    """Sélecteur de dossier pour ajouter un partage (dossiers uniquement)."""
+    """Folder picker to add a share (folders only)."""
     path = os.path.abspath(path)
     if not os.path.isdir(path):
         raise HTTPException(404)
@@ -282,5 +391,5 @@ async def list_dirs(path: str = "/", core: Core = Depends(get_core)) -> dict:
             e.name for e in os.scandir(path) if e.is_dir(follow_symlinks=True) and not e.name.startswith(".")
         )
     except PermissionError as e:
-        raise HTTPException(403, "Accès refusé") from e
+        raise http_error(403, "error.access_denied") from e
     return {"path": path, "parent": os.path.dirname(path) if path != "/" else None, "dirs": entries[:500]}

@@ -4,6 +4,7 @@ import { ArrowLeftIcon, CheckIcon, SearchIcon } from '@lucide/vue'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/vue-query'
 import { refDebounced } from '@vueuse/core'
 import { computed, ref, watch } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 import { toast } from 'vue-sonner'
 import { Badge } from '@/components/ui/badge'
@@ -17,10 +18,11 @@ import { Spinner } from '@/components/ui/spinner'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { useProfiles } from '@/composables/queries'
 import { api } from '@/lib/api'
-import { RELEASE_TYPES, SECONDARY_TYPES } from '@/lib/status'
+import { RELEASE_TYPES, releaseTypeLabel, SECONDARY_TYPES } from '@/lib/status'
 import { cn } from '@/lib/utils'
 
 const open = defineModel<boolean>('open', { default: false })
+const { t } = useI18n()
 const router = useRouter()
 const qc = useQueryClient()
 
@@ -66,12 +68,12 @@ const add = useMutation({
     monitor: monitor.value,
   }),
   onSuccess: (a) => {
-    toast.success(`${a.name} est suivi`, { description: 'Discographie synchronisée depuis MusicBrainz.' })
+    toast.success(t('addArtist.added', { name: a.name }), { description: t('addArtist.addedHint') })
     qc.invalidateQueries({ queryKey: ['artists'] })
     open.value = false
     router.push({ name: 'artist', params: { id: a.id } })
   },
-  onError: e => toast.error('Ajout impossible', { description: e.message }),
+  onError: e => toast.error(t('addArtist.failed'), { description: e.message }),
 })
 </script>
 
@@ -80,22 +82,22 @@ const add = useMutation({
     <DialogContent class="gap-0 overflow-hidden p-0 sm:max-w-[560px]">
       <DialogHeader class="border-b px-6 pt-5 pb-4">
         <DialogTitle class="text-[16px]">
-          {{ picked ? `Suivre ${picked.name}` : 'Suivre un artiste' }}
+          {{ picked ? t('addArtist.follow', { name: picked.name }) : t('common.followArtist') }}
         </DialogTitle>
         <DialogDescription class="text-[12.5px]">
           {{ picked
-            ? 'Décide ce que Soulsick doit chercher pour cet artiste, et comment.'
-            : 'Recherche dans MusicBrainz. La désambiguïsation évite de confondre deux homonymes.' }}
+            ? t('addArtist.howHint')
+            : t('addArtist.searchHint') }}
         </DialogDescription>
       </DialogHeader>
 
-      <!-- Étape 1 : choisir l'artiste -->
+      <!-- Step 1: pick the artist -->
       <div v-if="!picked" class="flex flex-col gap-3 p-4">
         <InputGroup>
           <InputGroupAddon>
             <SearchIcon />
           </InputGroupAddon>
-          <InputGroupInput v-model="q" placeholder="Nom de l’artiste…" autofocus />
+          <InputGroupInput v-model="q" :placeholder="t('addArtist.placeholder')" autofocus />
           <InputGroupAddon v-if="isFetching" align="inline-end">
             <Spinner />
           </InputGroupAddon>
@@ -125,43 +127,43 @@ const add = useMutation({
               </div>
             </div>
             <Badge v-if="r.in_library" variant="success">
-              <CheckIcon />Suivi
+              <CheckIcon />{{ t('addArtist.followed') }}
             </Badge>
             <span v-else class="font-mono text-[10.5px] text-faint tnum">{{ r.score }}%</span>
           </button>
           <p v-if="results && !results.length" class="py-8 text-center text-[12.5px] text-faint">
-            Aucun artiste trouvé sur MusicBrainz.
+            {{ t('addArtist.noResult') }}
           </p>
           <p v-if="!results && !isFetching" class="py-8 text-center text-[12.5px] text-faint">
-            Tape au moins deux lettres.
+            {{ t('addArtist.typeMore') }}
           </p>
         </div>
       </div>
 
-      <!-- Étape 2 : comment le suivre -->
+      <!-- Step 2: how to follow -->
       <form v-else class="flex flex-col gap-6 px-6 py-5" @submit.prevent="add.mutate()">
         <FieldGroup>
           <FieldSet>
             <FieldLegend variant="label">
-              Quand Soulsick trouve un album manquant
+              {{ t('addArtist.whenFound') }}
             </FieldLegend>
             <ToggleGroup v-model="mode" type="single" variant="outline" class="grid w-full grid-cols-2">
               <ToggleGroupItem value="validation" class="h-auto flex-col items-start gap-0.5 px-3 py-2.5 text-left">
-                <span class="text-[13px] font-medium">Me demander</span>
-                <span class="text-[11.5px] font-normal text-muted-foreground">Il propose les meilleurs candidats, tu choisis.</span>
+                <span class="text-[13px] font-medium">{{ t('artists.mode.validation') }}</span>
+                <span class="text-[11.5px] font-normal text-muted-foreground">{{ t('addArtist.validationHint') }}</span>
               </ToggleGroupItem>
               <ToggleGroupItem value="auto" class="h-auto flex-col items-start gap-0.5 px-3 py-2.5 text-left">
-                <span class="text-[13px] font-medium">Automatique</span>
-                <span class="text-[11.5px] font-normal text-muted-foreground">Il télécharge le meilleur, et explique pourquoi.</span>
+                <span class="text-[13px] font-medium">{{ t('artists.mode.auto') }}</span>
+                <span class="text-[11.5px] font-normal text-muted-foreground">{{ t('addArtist.autoHint') }}</span>
               </ToggleGroupItem>
             </ToggleGroup>
           </FieldSet>
 
           <Field>
-            <FieldLabel>Profil qualité</FieldLabel>
+            <FieldLabel>{{ t('artist.profile') }}</FieldLabel>
             <Select v-model="profileId">
               <SelectTrigger class="w-full">
-                <SelectValue placeholder="Choisir un profil" />
+                <SelectValue :placeholder="t('addArtist.pickProfile')" />
               </SelectTrigger>
               <SelectContent>
                 <SelectGroup>
@@ -171,45 +173,45 @@ const add = useMutation({
                 </SelectGroup>
               </SelectContent>
             </Select>
-            <FieldDescription>Formats acceptés et ordre de préférence. Modifiable dans les réglages.</FieldDescription>
+            <FieldDescription>{{ t('addArtist.profileHint') }}</FieldDescription>
           </Field>
 
           <FieldSet>
             <FieldLegend variant="label">
-              Sorties suivies
+              {{ t('artist.releaseTypes') }}
             </FieldLegend>
             <ToggleGroup v-model="primary" type="multiple" variant="outline" size="sm" class="flex-wrap justify-start">
-              <ToggleGroupItem v-for="(label, key) in RELEASE_TYPES" :key="key" :value="key">
-                {{ label }}
+              <ToggleGroupItem v-for="key in RELEASE_TYPES" :key="key" :value="key">
+                {{ releaseTypeLabel(key) }}
               </ToggleGroupItem>
             </ToggleGroup>
-            <FieldDescription>Les sorties secondaires ci-dessous sont exclues sauf si tu les coches.</FieldDescription>
+            <FieldDescription>{{ t('addArtist.secondaryHint') }}</FieldDescription>
             <ToggleGroup v-model="secondary" type="multiple" variant="outline" size="sm" class="flex-wrap justify-start">
-              <ToggleGroupItem v-for="(label, key) in SECONDARY_TYPES" :key="key" :value="key">
-                {{ label }}
+              <ToggleGroupItem v-for="key in SECONDARY_TYPES" :key="key" :value="key">
+                {{ releaseTypeLabel(key) }}
               </ToggleGroupItem>
             </ToggleGroup>
           </FieldSet>
 
           <FieldSet>
             <FieldLegend variant="label">
-              Discographie existante
+              {{ t('addArtist.existing') }}
             </FieldLegend>
             <ToggleGroup v-model="monitor" type="single" variant="outline" size="sm" class="flex-wrap justify-start">
               <ToggleGroupItem value="none">
-                Rien, je choisis ensuite
+                {{ t('addArtist.monitor.none') }}
               </ToggleGroupItem>
               <ToggleGroupItem value="future">
-                Seulement les futures sorties
+                {{ t('addArtist.monitor.future') }}
               </ToggleGroupItem>
               <ToggleGroupItem value="all">
-                Tout chercher
+                {{ t('addArtist.monitor.all') }}
               </ToggleGroupItem>
             </ToggleGroup>
             <FieldDescription>
               {{ monitor === 'all'
-                ? 'Toute la discographie des types cochés part en recherche : ça peut faire beaucoup.'
-                : 'Les sorties qui paraîtront plus tard seront suivies automatiquement (types cochés ci-dessus).' }}
+                ? t('addArtist.monitorAllHint')
+                : t('addArtist.monitorHint') }}
             </FieldDescription>
           </FieldSet>
         </FieldGroup>
@@ -217,11 +219,11 @@ const add = useMutation({
         <DialogFooter :class="cn('-mx-6 -mb-5 border-t bg-well/50 px-6 py-3.5 sm:justify-between')">
           <Button type="button" variant="ghost" size="sm" @click="picked = null">
             <ArrowLeftIcon data-icon="inline-start" />
-            Autre artiste
+            {{ t('addArtist.other') }}
           </Button>
           <Button type="submit" size="sm" :disabled="add.isPending.value || !primary.length">
             <Spinner v-if="add.isPending.value" data-icon="inline-start" />
-            Suivre {{ picked.name }}
+            {{ t('addArtist.follow', { name: picked.name }) }}
           </Button>
         </DialogFooter>
       </form>

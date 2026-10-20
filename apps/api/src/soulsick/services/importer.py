@@ -16,6 +16,8 @@ from sqlalchemy import select
 
 from ..audiotags import TagSet, read_meta, write_tags
 from ..matching import FileRef, MatchResult, TrackRef, match_files
+from ..messages import M, Msg, UserError, set_reason
+from .libguard import HELD
 from ..models import (
     AlbumStatus,
     Artist,
@@ -25,6 +27,7 @@ from ..models import (
     QualityProfile,
     Release,
     ReleaseGroup,
+    Track,
     Transfer,
     TransferState,
 )
@@ -37,6 +40,69 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 MIN_CONFIDENCE = 0.75
 _TERMINAL = {TransferState.COMPLETE, TransferState.FAILED, TransferState.ABORTED}
+
+
+def destination(t: Track, artist: Artist, rg: ReleaseGroup, rel: Release, template: str, music: str, ext: str) -> str:
+    year = (rel.date or rg.first_release_date or "")[:4]
+    rel_path = render_path(
+        template,
+        TrackNaming(
+            albumartist=artist.name,
+            artist=t.artist_credit or artist.name,
+            album=rg.title,
+            year=year,
+            title=t.title,
+            track=t.position,
+            disc=t.disc,
+            disc_count=rel.disc_count,
+            ext=ext,
+            release_type=rg.primary_type or "",
+        ),
+    )
+    return os.path.join(music, rel_path)
+
+
+async def place_track(
+    src: str, t: Track, artist: Artist, rg: ReleaseGroup, rel: Release, settings, music: str, cover: bytes | None,
+    replaceable: set[str] | None = None,
+) -> str:
+    """Tags a file with its track's MusicBrainz info, then shelves it with the naming template.
+
+    `replaceable`: files of this album already in the library, which may be overwritten
+    (a partial album being completed, or a quality upgrade).
+    """
+    dest = destination(t, artist, rg, rel, settings.library.naming_template, music, src.rsplit(".", 1)[-1].lower())
+    if settings.library.write_tags:
+        tags = TagSet(
+            title=t.title,
+            artist=t.artist_credit or artist.name,
+            album=rg.title,
+            albumartist=artist.name,
+            date=rel.date or rg.first_release_date or "",
+            tracknumber=t.position,
+            tracktotal=sum(1 for x in rel.tracks if x.disc == t.disc),
+            discnumber=t.disc,
+            disctotal=rel.disc_count,
+            musicbrainz_trackid=t.recording_mbid,
+            musicbrainz_releasetrackid=t.mbid,
+            musicbrainz_albumid=rel.mbid,
+            musicbrainz_releasegroupid=rg.mbid,
+            musicbrainz_artistid=artist.mbid,
+            musicbrainz_albumartistid=artist.mbid,
+            releasetype=rg.primary_type or "",
+            label=rel.label or "",
+            barcode=rel.barcode or "",
+        )
+        await asyncio.to_thread(write_tags, src, tags, cover if settings.library.embed_cover else None)
+    if os.path.realpath(src) != os.path.realpath(dest):
+        if os.path.exists(dest):
+            if replaceable and os.path.realpath(dest) in replaceable:
+                os.remove(dest)
+            else:
+                raise UserError("error.destination_taken", path=dest)
+        os.makedirs(os.path.dirname(dest), exist_ok=True)
+        await asyncio.to_thread(shutil.move, src, dest)
+    return dest
 
 
 class ImportService:
@@ -58,7 +124,13 @@ class ImportService:
         return c, rg, artist, profile, releases
 
     async def import_candidate(self, candidate_id: int) -> None:
-        """Les fichiers d'un candidat sont arrivés : on tente l'import de l'album (toutes sources confondues)."""
+        """A candidate's files arrived: try importing the album (all sources together)."""
+        if not await self.core.guard.check():
+            # Library folder missing or not mounted: the album waits, imported once it is back
+            ctx = await self._context(candidate_id)
+            if ctx:
+                await self._status(ctx[1].id, AlbumStatus.NEEDS_REVIEW, M(HELD, problem=self.core.guard.problem))
+            return
         async with self._lock:
             try:
                 await self._import(candidate_id)
@@ -67,20 +139,20 @@ class ImportService:
                 ctx = await self._context(candidate_id)
                 if ctx:
                     _, rg, *_ = ctx
-                    await self._status(rg.id, AlbumStatus.NEEDS_REVIEW, f"Erreur à l'import : {e}")
+                    await self._status(rg.id, AlbumStatus.NEEDS_REVIEW, M("reason.import_error", error=str(e)))
                     await self.core.journal.emit(
-                        "import.error", f"« {rg.title} » : erreur pendant l'import ({e})", level="error",
+                        "import.error", M("import.error", title=rg.title, error=str(e)), level="error",
                         release_group_id=rg.id, candidate_id=candidate_id,
                     )
 
-    async def _status(self, rg_id: int, status: str, reason: str | None) -> None:
+    async def _status(self, rg_id: int, status: str, reason: Msg | None) -> None:
         async with self.core.db.session() as s:
             rg = await s.get(ReleaseGroup, rg_id)
             if rg:
                 rg.status = status
-                rg.status_reason = reason
+                set_reason(rg, "status_reason", reason)
                 await s.commit()
-        self.core.hub.publish("album", {"id": rg_id, "status": status, "status_reason": reason})
+        self.core.hub.publish("album", {"id": rg_id, "status": status, "status_reason": reason.text if reason else None})
 
     def _local_files(self, directory: str) -> list[str]:
         out = []
@@ -126,15 +198,40 @@ class ImportService:
             if c.status == CandidateStatus.CHOSEN and any(t.state not in _TERMINAL for t in ts):
                 inflight.append(c)
             if ts:
-                files = [
-                    t.local_path for t in ts
-                    if t.state == TransferState.COMPLETE and t.local_path and os.path.isfile(t.local_path)
-                ]
+                files = []
+                for t in ts:
+                    if t.state != TransferState.COMPLETE or not t.local_path or not os.path.isfile(t.local_path):
+                        continue
+                    files.append(await self._reclaim(c, t))
             else:
                 files = self._local_files(c.download_dir or "")  # anciens téléchargements sans lignes
             if files:
                 sources.append((c, sorted(files)))
         return sources, inflight
+
+    async def _reclaim(self, c: Candidate, t: Transfer) -> str:
+        """A file received from this source but stored elsewhere (an aioslsk re-queue used to put it
+        in downloads/manual): moved back into the source's download folder, row updated.
+        Only files recorded as received from this very source are concerned."""
+        if not c.download_dir or not t.local_path:
+            return t.local_path or ""
+        home = os.path.realpath(c.download_dir)
+        if os.path.realpath(t.local_path).startswith(home + os.sep):
+            return t.local_path
+        os.makedirs(home, exist_ok=True)
+        base, ext = os.path.splitext(os.path.basename(t.local_path))
+        dest, n = os.path.join(home, base + ext), 1
+        while os.path.exists(dest):
+            dest, n = os.path.join(home, f"{base} ({n}){ext}"), n + 1
+        await asyncio.to_thread(shutil.move, t.local_path, dest)
+        async with self.core.db.session() as s:
+            row = await s.get(Transfer, t.id)
+            if row:
+                row.local_path = dest
+                await s.commit()
+        log.info("moved %s back into %s", t.local_path, home)
+        t.local_path = dest
+        return dest
 
     async def build_album_plan(self, rg_id: int) -> tuple[list[dict], dict]:
         """Plan d'import multi-sources : pour chaque piste MusicBrainz, le meilleur fichier reçu.
@@ -149,6 +246,13 @@ class ImportService:
             assert artist
         releases = await self.core.catalog.releases_with_tracks(rg_id)
         sources, _ = await self._sources(rg_id)
+        # Tracks of this album already in the library (e.g. one shelved by hand): they count as present
+        async with self.core.db.session() as s:
+            shelved = set(
+                (await s.execute(select(LibraryFile.recording_mbid).where(
+                    LibraryFile.release_group_mbid == rg.mbid, LibraryFile.recording_mbid.is_not(None),
+                ))).scalars()
+            )
         meta: dict[str, object] = {}
         for _, files in sources:
             for f in files:
@@ -185,19 +289,20 @@ class ImportService:
                     if a.track_index not in picks or key < picks[a.track_index][0]:
                         picks[a.track_index] = (key, entry)
                 all_files.extend((c, f) for f in files)
+            in_library = [i for i, t in enumerate(rel.tracks) if i not in picks and t.recording_mbid in shelved]
             result = MatchResult()
             result.assignments = [e["assignment"] for _, e in picks.values()]
-            result.unmatched_tracks = [i for i in range(len(tracks)) if i not in picks]
-            result.title_score = sum(a.title_score for a in result.assignments) / max(1, len(tracks))
-            result.count_ratio = len(picks) / max(1, len(tracks))
+            result.unmatched_tracks = [i for i in range(len(tracks)) if i not in picks and i not in in_library]
+            result.title_score = (sum(a.title_score for a in result.assignments) + len(in_library)) / max(1, len(tracks))
+            result.count_ratio = (len(picks) + len(in_library)) / max(1, len(tracks))
             deltas = [a.duration_delta for a in result.assignments if a.duration_delta is not None]
             if deltas:
                 result.duration_score = sum(1 for d in deltas if d <= 3.0) / len(tracks)
             if best is None or result.confidence > best[0].confidence + 0.02:
-                best = (result, rel, picks, all_files, unmatched_files)
+                best = (result, rel, picks, all_files, unmatched_files, in_library)
         if best is None:
             return [], {"confidence": 0, "release_id": None, "unmatched_tracks": [], "unmatched_files": [], "sources": 0}
-        result, rel, picks, all_files, unmatched_files = best
+        result, rel, picks, all_files, unmatched_files, in_library = best
         chosen = {e["file"]: (ti, e) for ti, (_, e) in picks.items()}
         plan = []
         for c, f in all_files:
@@ -225,6 +330,7 @@ class ImportService:
             "release_id": rel.id,
             "release_title": rel.title,
             "unmatched_tracks": [rel.tracks[i].title for i in result.unmatched_tracks],
+            "in_library": [rel.tracks[i].title for i in in_library],
             "unmatched_files": [os.path.basename(f) for f in unmatched_files],
             "sources": len(sources),
             "per_source": {c.username: sum(1 for _, e in picks.values() if e["candidate"].id == c.id) for c, _ in sources},
@@ -247,9 +353,9 @@ class ImportService:
         label = f"{artist.name} – {rg.title}"
         sources, inflight = await self._sources(rg.id)
         if inflight:
-            # Une autre source est encore en cours : on importera quand tout sera arrivé
+            # Another source is still downloading: import once everything has arrived
             names = ", ".join(x.username for x in inflight)
-            await self._status(rg.id, AlbumStatus.DOWNLOADING, f"Fichiers reçus de {c.username}, en attente de {names}")
+            await self._status(rg.id, AlbumStatus.DOWNLOADING, M("reason.waiting_files", peer=c.username, names=names))
             return
 
         await self._status(rg.id, AlbumStatus.IMPORTING, None)
@@ -267,26 +373,30 @@ class ImportService:
         if len(missing) > missing_ok:
             received = sum(1 for p in plan if p["track_id"])
             total = received + len(missing)
-            reason = f"{received}/{total} pistes reçues — manquante(s) : {', '.join(missing[:4])}{'…' if len(missing) > 4 else ''}"
-            await self._status(rg.id, AlbumStatus.PENDING_APPROVAL, reason + ". Complète depuis un autre pair.")
+            reason = M(
+                "reason.incomplete", received=received, total=total,
+                missing=", ".join(missing[:4]) + ("…" if len(missing) > 4 else ""),
+            )
+            await self._status(rg.id, AlbumStatus.PENDING_APPROVAL, M("reason.incomplete_action", reason=reason))
             await self.core.journal.emit(
                 "import.incomplete",
-                f"{label} : {reason}. Rien n'a été rangé ; tu peux compléter les pistes manquantes depuis un autre pair.",
+                M("import.incomplete", label=label, reason=reason),
                 level="warning", artist_id=artist.id, release_group_id=rg.id, candidate_id=candidate_id, data=info,
             )
             return
 
-        problems = []
+        problems: list[Msg] = []
         if info["confidence"] < MIN_CONFIDENCE:
-            problems.append(f"confiance {round(info['confidence'] * 100)} % < {round(MIN_CONFIDENCE * 100)} %")
+            problems.append(M("reason.low_confidence", score=round(info["confidence"] * 100), min=round(MIN_CONFIDENCE * 100)))
         if info.get("unmatched_files") and info.get("sources", 1) <= 1:
-            problems.append(f"{len(info['unmatched_files'])} fichier(s) sans piste")
+            problems.append(M("reason.unmatched_files", n=len(info["unmatched_files"])))
         if problems:
-            reason = "Association incertaine : " + ", ".join(problems)
+            joined: Msg = problems[0] if len(problems) == 1 else M("join", a=problems[0], b=problems[1])
+            reason = M("reason.uncertain", problems=joined)
             await self._status(rg.id, AlbumStatus.NEEDS_REVIEW, reason)
             await self.core.journal.emit(
                 "import.needs_review",
-                f"{label} : {reason}. Rien n'a été déplacé, vérifie le plan d'import.",
+                M("import.needs_review", label=label, reason=reason),
                 level="warning", artist_id=artist.id, release_group_id=rg.id, candidate_id=candidate_id,
                 data=info,
             )
@@ -294,15 +404,16 @@ class ImportService:
         await self.apply_plan(candidate_id, plan, info["release_id"])
 
     async def apply_plan(self, candidate_id: int, plan: list[dict], release_id: int, by_user: bool = False) -> None:
+        self.core.guard.require()
         ctx = await self._context(candidate_id)
         if not ctx:
             return
         c, rg, artist, profile, releases = ctx
         rel = next((r for r in releases if r.id == release_id), None)
         if rel is None:
-            raise ValueError("Édition inconnue")
+            raise UserError("error.edition_not_found")
         tracks = {t.id: t for t in rel.tracks}
-        # Le plan peut venir de l'interface : on n'accepte que des fichiers des dossiers de réception de l'album
+        # The plan may come from the UI: only files from the album's download folders are accepted
         async with self.core.db.session() as s:
             album_cands = list(
                 (await s.execute(select(Candidate).where(Candidate.release_group_id == rg.id))).scalars()
@@ -311,25 +422,25 @@ class ImportService:
         for item in plan:
             real = os.path.realpath(item.get("file", ""))
             if not any(real.startswith(r + os.sep) for r in roots):
-                raise ValueError(f"Fichier hors des dossiers de réception : {item.get('file')}")
+                raise UserError("error.file_outside_downloads", path=item.get("file"))
         used = [i for i in plan if tracks.get(i.get("track_id"))]
         if len({i["track_id"] for i in used}) != len(used):
-            raise ValueError("Une piste est associée à plusieurs fichiers")
+            raise UserError("error.track_mapped_twice")
         settings = await self.core.settings.get()
         music = str(self.core.env.music_dir)
-        year = (rel.date or rg.first_release_date or "")[:4]
 
-        # Pochette : toujours écrite en cover.jpg (Navidrome), intégrée aux fichiers si demandé
+        # Cover: always written as cover.jpg (Navidrome), embedded in files if asked
         p = await self.core.mb.cover("release", rel.mbid, 1200) or await self.core.mb.cover(
             "release-group", rg.mbid, 1200
         )
         cover = p.read_bytes() if p else None
 
-        # Remplacement d'une version précédente (amélioration de qualité)
+        # Replacing a previous version (quality upgrade)
         async with self.core.db.session() as s:
             old = list(
                 (await s.execute(select(LibraryFile).where(LibraryFile.release_group_mbid == rg.mbid))).scalars()
             )
+        replaceable = {os.path.realpath(f.path) for f in old}
         moved: list[dict] = []
         new_paths: list[str] = []
         for item in plan:
@@ -337,47 +448,7 @@ class ImportService:
             if t is None:
                 continue
             src = item["file"]
-            ext = src.rsplit(".", 1)[-1].lower()
-            rel_path = render_path(
-                settings.library.naming_template,
-                TrackNaming(
-                    albumartist=artist.name,
-                    artist=t.artist_credit or artist.name,
-                    album=rg.title,
-                    year=year,
-                    title=t.title,
-                    track=t.position,
-                    disc=t.disc,
-                    disc_count=rel.disc_count,
-                    ext=ext,
-                    release_type=rg.primary_type or "",
-                ),
-            )
-            dest = os.path.join(music, rel_path)
-            if settings.library.write_tags:
-                tags = TagSet(
-                    title=t.title,
-                    artist=t.artist_credit or artist.name,
-                    album=rg.title,
-                    albumartist=artist.name,
-                    date=rel.date or rg.first_release_date or "",
-                    tracknumber=t.position,
-                    tracktotal=sum(1 for x in rel.tracks if x.disc == t.disc),
-                    discnumber=t.disc,
-                    disctotal=rel.disc_count,
-                    musicbrainz_trackid=t.recording_mbid,
-                    musicbrainz_releasetrackid=t.mbid,
-                    musicbrainz_albumid=rel.mbid,
-                    musicbrainz_releasegroupid=rg.mbid,
-                    musicbrainz_artistid=artist.mbid,
-                    musicbrainz_albumartistid=artist.mbid,
-                    releasetype=rg.primary_type or "",
-                    label=rel.label or "",
-                    barcode=rel.barcode or "",
-                )
-                await asyncio.to_thread(write_tags, src, tags, cover if settings.library.embed_cover else None)
-            os.makedirs(os.path.dirname(dest), exist_ok=True)
-            await asyncio.to_thread(shutil.move, src, dest)
+            dest = await place_track(src, t, artist, rg, rel, settings, music, cover, replaceable)
             moved.append({"from": src, "to": dest, "track": t.title, "source": item.get("source")})
             new_paths.append(dest)
 
@@ -386,23 +457,31 @@ class ImportService:
             with open(os.path.join(album_dir, "cover.jpg"), "wb") as fh:
                 fh.write(cover)
 
+        # Older files of this album go only when the plan brings a new version of the same track;
+        # tracks the plan doesn't cover (already shelved, e.g. by hand) stay
+        placed = {tracks[i["track_id"]].recording_mbid for i in used}
         removed_old = []
+        kept = []
         for f in old:
-            if f.path not in new_paths and os.path.exists(f.path):
+            if f.path in new_paths or not os.path.exists(f.path):
+                continue
+            if f.recording_mbid in placed:
                 os.remove(f.path)
                 removed_old.append(f.path)
+            else:
+                kept.append(f.path)
 
-        # Réception nettoyée : fichiers non retenus (doublons, sources abandonnées) supprimés
+        # Downloads cleaned: unused files (duplicates, dropped sources) removed
         leftovers = 0
         for x in album_cands:
             if x.download_dir and os.path.isdir(x.download_dir):
                 leftovers += sum(len(f) for _, _, f in os.walk(x.download_dir))
                 shutil.rmtree(x.download_dir, ignore_errors=True)
 
-        # Indexer les fichiers AVANT d'annoncer l'album comme rangé (sinon : « rangé » avec 0 fichier)
+        # Index files BEFORE announcing the album as shelved (otherwise: shelved with 0 files)
         await self.core.library.scan()
 
-        metas = [read_meta(p) for p in new_paths]
+        metas = [read_meta(p) for p in [*new_paths, *kept]]
         fmt = worst_format([m.format for m in metas], [])
         cutoff = profile.upgrade_until if profile else None
         upgrade = bool(cutoff and not is_better_or_equal(fmt, cutoff))
@@ -415,28 +494,29 @@ class ImportService:
                 row = await s.get(Candidate, cid)
                 if row:
                     row.status = CandidateStatus.IMPORTED
-                    row.reject_reason = None
+                    set_reason(row, "reject_reason", None)
             g = await s.get(ReleaseGroup, rg.id)
             assert g
             g.selected_release_id = rel.id
             g.imported_format = fmt
             g.imported_path = album_dir
             g.status = AlbumStatus.WANTED if upgrade else AlbumStatus.IMPORTED
-            g.status_reason = f"Importé en {fmt}, recherche d'une meilleure qualité" if upgrade else None
+            set_reason(g, "status_reason", M("reason.imported_upgrading", format=fmt) if upgrade else None)
             await s.commit()
 
         await self.core.journal.emit(
             "import.done",
-            f"{artist.name} – {rg.title} importé : {len(moved)} fichiers rangés dans {album_dir}"
-            + (" (tags MusicBrainz écrits" + (", pochette intégrée)" if cover else ")") if settings.library.write_tags else "")
-            + (
-                " ; sources : " + ", ".join(f"{u} ({n})" for u, n in per_source.items())
-                if len(per_source) > 1 else ""
-            )
-            + (f" ; {len(removed_old)} ancien(s) fichier(s) remplacé(s)" if removed_old else "")
-            + (f" ; {leftovers - len(moved)} fichier(s) non retenu(s) supprimé(s) de la réception"
-               if leftovers > len(moved) else "")
-            + (" ; validé par toi" if by_user else ""),
+            M(
+                "import.done", artist=artist.name, title=rg.title, n=len(moved), dir=album_dir,
+                details=[
+                    *([M("import.detail.tags_cover" if cover else "import.detail.tags")] if settings.library.write_tags else []),
+                    *([M("import.detail.sources", sources=", ".join(f"{u} ({n})" for u, n in per_source.items()))]
+                      if len(per_source) > 1 else []),
+                    *([M("import.detail.replaced", n=len(removed_old))] if removed_old else []),
+                    *([M("import.detail.dropped", n=leftovers - len(moved))] if leftovers > len(moved) else []),
+                    *([M("import.detail.by_you")] if by_user else []),
+                ],
+            ),
             artist_id=artist.id, release_group_id=rg.id, candidate_id=candidate_id,
             data={"moves": moved, "replaced": removed_old, "format": fmt, "release": rel.title, "sources": per_source},
         )

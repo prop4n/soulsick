@@ -62,10 +62,10 @@ class MusicBrainz:
                         self._cache[key] = (time.monotonic(), data)
                         return data
                     if r.status_code == 404:
-                        raise MusicBrainzError(f"Introuvable sur MusicBrainz : {path}")
-                    err = MusicBrainzError(f"MusicBrainz a répondu {r.status_code}")
+                        raise MusicBrainzError(f"Not found on MusicBrainz: {path}")
+                    err = MusicBrainzError(f"MusicBrainz answered {r.status_code}")
             await asyncio.sleep(2 ** attempt)
-        raise MusicBrainzError(f"MusicBrainz indisponible : {err}")
+        raise MusicBrainzError(f"MusicBrainz unavailable: {err}")
 
     # --- Artistes ----------------------------------------------------------
 
@@ -127,6 +127,54 @@ class MusicBrainz:
             if not releases or offset >= data.get("release-count", 0):
                 break
         return sorted(groups.values(), key=lambda g: g["first_release_date"] or "9999")
+
+    async def search_release_groups(self, artist: str, album: str, limit: int = 5) -> list[dict]:
+        """Release groups correspondant à « artiste + album » (pour reconnaître de la musique déjà présente)."""
+
+        def q(v: str) -> str:
+            return v.replace("\\", " ").replace('"', " ").strip()
+
+        queries = []
+        if artist and album:
+            queries.append(f'releasegroup:"{q(album)}" AND artist:"{q(artist)}"')
+        if album:
+            queries.append(f'releasegroup:"{q(album)}"')
+        for query in queries:
+            data = await self._get("release-group", {"query": query, "limit": limit}, ttl=3600)
+            out = []
+            for g in data.get("release-groups", []):
+                credit = (g.get("artist-credit") or [{}])[0]
+                a = credit.get("artist") or {}
+                if not a.get("id"):
+                    continue
+                out.append(
+                    {
+                        "mbid": g["id"],
+                        "title": g["title"],
+                        "primary_type": (g.get("primary-type") or "").lower() or None,
+                        "secondary_types": [t.lower() for t in g.get("secondary-types", [])],
+                        "first_release_date": g.get("first-release-date") or None,
+                        "artist_mbid": a["id"],
+                        "artist_name": a.get("name", ""),
+                        "score": g.get("score", 0),
+                    }
+                )
+            if out:
+                return out
+        return []
+
+    async def get_release_group(self, mbid: str) -> dict:
+        g = await self._get(f"release-group/{mbid}", {"inc": "artist-credits"})
+        credit = (g.get("artist-credit") or [{}])[0].get("artist") or {}
+        return {
+            "mbid": g["id"],
+            "title": g["title"],
+            "primary_type": (g.get("primary-type") or "").lower() or None,
+            "secondary_types": [t.lower() for t in g.get("secondary-types", [])],
+            "first_release_date": g.get("first-release-date") or None,
+            "artist_mbid": credit.get("id"),
+            "artist_name": credit.get("name", ""),
+        }
 
     # --- Éditions et pistes -------------------------------------------------
 
@@ -199,7 +247,7 @@ class MusicBrainz:
         try:
             r = await self.client.get(f"{CAA_URL}/{kind}/{mbid}/front-{size}", headers={"Accept": "image/*"})
         except httpx.HTTPError as e:
-            log.warning("cover %s %s : %s", kind, mbid, e)
+            log.warning("cover %s %s: %s", kind, mbid, e)
             return None
         if r.status_code != 200:
             missing.touch()

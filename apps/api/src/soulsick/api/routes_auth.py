@@ -1,11 +1,13 @@
 import time
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi import APIRouter, Depends, Request, Response
 from pydantic import BaseModel, Field
 
 from ..auth import COOKIE, MAX_AGE
 from ..core import Core
+from ..messages import M
 from .deps import get_core
+from .errors import http_error
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
@@ -23,7 +25,7 @@ def _check_rate(ip: str) -> None:
     recent = [t for t in _failures.get(ip, []) if now - t < WINDOW]
     _failures[ip] = recent
     if len(recent) >= MAX_FAILURES:
-        raise HTTPException(429, "Trop de tentatives, réessaie dans quelques minutes")
+        raise http_error(429, "error.too_many_attempts")
 
 
 class Credentials(BaseModel):
@@ -48,10 +50,10 @@ async def state(request: Request, core: Core = Depends(get_core)) -> dict:
 @router.post("/setup")
 async def setup(body: Credentials, request: Request, response: Response, core: Core = Depends(get_core)) -> dict:
     if await core.auth.admin() is not None:
-        raise HTTPException(409, "Le compte administrateur existe déjà")
+        raise http_error(409, "error.admin_exists")
     await core.auth.setup(body.username, body.password)
     _set_cookie(response, await core.auth.issue(body.username), request)
-    await core.journal.emit("auth.setup", f"Compte administrateur « {body.username} » créé")
+    await core.journal.emit("auth.setup", M("auth.setup", name=body.username))
     return {"ok": True}
 
 
@@ -61,10 +63,10 @@ async def login(body: Credentials, request: Request, response: Response, core: C
     if not await core.auth.verify(body.username, body.password):
         _failures.setdefault(_ip(request), []).append(time.monotonic())
         await core.journal.emit(
-            "auth.failed", f"Tentative de connexion refusée pour « {body.username} »", level="warning",
+            "auth.failed", M("auth.failed", name=body.username), level="warning",
             data={"ip": request.client.host if request.client else None},
         )
-        raise HTTPException(401, "Identifiants invalides")
+        raise http_error(401, "error.invalid_credentials")
     _set_cookie(response, await core.auth.issue(body.username), request)
     return {"ok": True}
 

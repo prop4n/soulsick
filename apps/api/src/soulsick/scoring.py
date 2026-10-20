@@ -10,6 +10,7 @@ import re
 from dataclasses import dataclass, field
 
 from .matching import FileRef, MatchResult, TrackRef, match_files, normalize
+from .messages import M, Msg
 from .quality import FORMAT_LABELS, FileInfo, detect_format, extension_of, format_rank, is_audio, worst_format
 
 _DISC_DIR = re.compile(r"^(?:cd|disc|disk)\s*\d+$", re.I)
@@ -61,6 +62,8 @@ class ReleaseOption:
     release_id: int
     title: str
     tracks: list[TrackRef]
+    # Indexes of tracks already in the library: a folder lacking them is not "missing" anything
+    owned: frozenset[int] = frozenset()
 
 
 @dataclass
@@ -75,7 +78,7 @@ class ScoredCandidate:
     format: str | None = None
     score: float = 0.0
     detail: dict = field(default_factory=dict)
-    reject_reason: str | None = None
+    reject_reason: Msg | None = None
     release_id: int | None = None
 
     @property
@@ -155,7 +158,7 @@ def score_candidate(
         "points": round(fmt_points, 1),
         "max": 30,
         "format": fmt,
-        "label": FORMAT_LABELS.get(fmt or "", "inconnu"),
+        "label": FORMAT_LABELS.get(fmt or "", "?"),
         "rank": rank,
         "mixed": len(distinct) > 1,
     }
@@ -184,29 +187,28 @@ def score_candidate(
             "title_score": round(m.title_score, 3),
             "duration_score": None if m.duration_score is None else round(m.duration_score, 3),
             "confidence": round(m.confidence, 3),
-            "missing": [rel.tracks[i].title for i in m.unmatched_tracks],
+            "missing": [rel.tracks[i].title for i in m.unmatched_tracks if i not in rel.owned],
         }
 
     p_points, p_detail = peer_points(c)
     c.detail["peer"] = p_detail
     c.score = round(fmt_points + match_points + p_points, 1)
 
-    # Raisons de rejet, dans l'ordre de gravité
+    # Rejection reasons, most serious first
     if rank is None:
         if fmt is None and len(distinct) > 0:
-            c.reject_reason = "Format non reconnu sur certains fichiers"
+            c.reject_reason = M("reject.unknown_format")
         else:
-            label = FORMAT_LABELS.get(fmt or "", fmt or "inconnu")
-            c.reject_reason = f"Format {label} non autorisé par le profil"
+            c.reject_reason = M("reject.format_refused", format=FORMAT_LABELS.get(fmt or "", fmt or "?"))
     elif best is None:
-        c.reject_reason = "Aucune tracklist MusicBrainz disponible"
+        c.reject_reason = M("reject.no_tracklist")
     else:
         m, rel = best
-        missing = len(m.unmatched_tracks)
+        missing = len([i for i in m.unmatched_tracks if i not in rel.owned])
         if missing > max_missing_tracks:
-            c.reject_reason = f"{missing} piste(s) manquante(s) sur {len(rel.tracks)} (toléré : {max_missing_tracks})"
+            c.reject_reason = M("reject.missing_tracks", n=missing, total=len(rel.tracks), allowed=max_missing_tracks)
         elif m.title_score < min_match:
-            c.reject_reason = f"Titres trop différents de la tracklist ({round(m.title_score * 100)} % < {round(min_match * 100)} %)"
+            c.reject_reason = M("reject.titles", score=round(m.title_score * 100), min=round(min_match * 100))
     return c
 
 

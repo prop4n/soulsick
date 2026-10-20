@@ -5,8 +5,9 @@ import CoverArt from './CoverArt.vue'
 import FormatTag from './FormatTag.vue'
 import SignalChain from './SignalChain.vue'
 import StatusBadge from './StatusBadge.vue'
+import { serverText } from '@/lib/serverText'
 
-/** Ligne d'album réutilisable (file, console, listes) : pochette, titre, chaîne, raison. */
+/** Reusable album row: cover, title, chain, reason. */
 defineProps<{ album: ReleaseGroup, showArtist?: boolean }>()
 </script>
 
@@ -25,7 +26,7 @@ defineProps<{ album: ReleaseGroup, showArtist?: boolean }>()
         <template v-if="showArtist && album.artist">
           {{ album.artist.name }}<span class="text-faint"> · </span>
         </template>
-        {{ album.status_reason ?? '' }}
+        {{ serverText(album.status_reason, album.status_reason_t) }}
       </p>
     </div>
     <div class="hidden shrink-0 flex-col items-end gap-1.5 sm:flex">

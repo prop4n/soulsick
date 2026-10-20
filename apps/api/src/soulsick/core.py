@@ -10,15 +10,22 @@ from .auth import Auth
 from .config import Env
 from .db import Database
 from .journal import Hub, Journal
-from .models import AlbumStatus, Artist, ReleaseGroup, Transfer, TransferState
+from .legacy import convert_legacy_reasons
+from .messages import M, Msg
+from .models import AlbumStatus, Artist, Candidate, CandidateStatus, ReleaseGroup, Transfer, TransferState
 from .musicbrainz import MusicBrainz
 from .services.catalog import CatalogService
+from .services.chat import ChatService
 from .services.coverage import CoverageService
+from .services.existing import ExistingImportService
 from .services.hunter import HunterService
 from .services.importer import ImportService
+from .services.libguard import LibraryGuard
 from .services.library import LibraryService
 from .services.navidrome import NavidromeService
+from .services.peers import PeerService
 from .services.shares import ShareService
+from .services.storage import StorageService
 from .services.transfers import TransferService
 from .settings_store import SettingsStore
 from .slsk.engine import SlskEngine
@@ -45,54 +52,94 @@ class Core:
         self.shares = ShareService(self)
         self.navidrome = NavidromeService(self)
         self.coverage = CoverageService(self)
+        self.existing = ExistingImportService(self)
+        self.chat = ChatService(self)
+        self.storage = StorageService(self)
+        self.guard = LibraryGuard(self)
+        self.peers = PeerService(self)
         self._tasks: list[asyncio.Task] = []
 
         self.engine.on_transfer = self.transfers.on_update
         self.engine.on_status = lambda st: self.hub.publish("status", st)
         self.engine.on_info = self._engine_info
+        self.engine.on_chat = self.chat.on_message
+        self.engine.on_room = self.chat.on_room
+        self.engine.rooms_wanted = self.chat.joined_rooms
 
-    async def _engine_info(self, kind: str, message: str, data: dict) -> None:
+    async def _engine_info(self, kind: str, message: Msg, data: dict) -> None:
         level = data.pop("level", "info")
         await self.journal.emit(kind, message, level=level, data=data)
 
     async def start(self) -> None:
         await self.db.create_all()
         async with self.db.session() as s:
-            # Bases d'avant les sorties partagées : chaque sortie est liée à son artiste principal
+            # Databases from before shared releases: each release is linked to its main artist
             await s.execute(text(
                 "INSERT OR IGNORE INTO artist_release_group (artist_id, release_group_id) "
                 "SELECT artist_id, id FROM release_group"
             ))
             await s.commit()
         await self.catalog.ensure_default_profiles()
+        await convert_legacy_reasons(self.db)
         await self._recover()
-        await self.journal.emit("app.started", "Soulsick démarré")
+        await self.transfers.load_cancelled()
+        await self.journal.emit("app.started", M("app.started"))
+        await self.guard.check()
+        self._tasks.append(asyncio.create_task(self.guard.loop()))
         if not self.env.disable_engine:
             await self.restart_engine()
             self._tasks.append(asyncio.create_task(self.hunter.loop()))
             self._tasks.append(asyncio.create_task(self._sync_loop()))
             self._tasks.append(asyncio.create_task(self._queue_loop()))
+            if self.env.forwarded_port_file:
+                self._tasks.append(asyncio.create_task(self._port_loop()))
         self._tasks.append(asyncio.create_task(self.library.scan()))
 
     async def _recover(self) -> None:
-        """Après un redémarrage, les étapes en cours ne peuvent pas reprendre telles quelles."""
+        """After a restart, steps in progress can't resume as they were."""
         async with self.db.session() as s:
             await s.execute(
                 update(ReleaseGroup)
                 .where(ReleaseGroup.status == AlbumStatus.SEARCHING)
-                .values(status=AlbumStatus.WANTED, status_reason="Recherche interrompue par un redémarrage")
+                .values(
+                    status=AlbumStatus.WANTED,
+                    status_reason=M("reason.restart_interrupted").text,
+                    status_reason_t=M("reason.restart_interrupted").to_json(),
+                )
             )
             await s.execute(
                 update(Transfer)
                 .where(Transfer.direction == "upload", Transfer.state.not_in(["complete", "failed", "aborted"]))
-                .values(state=TransferState.ABORTED, error="Interrompu par un redémarrage")
+                .values(state=TransferState.ABORTED, error=M("transfer.restart_interrupted").text)
             )
             await s.commit()
         await self._merge_orphan_downloads()
+        await self._repair_requeued_imports()
+
+    async def _repair_requeued_imports(self) -> None:
+        """Repairs rows touched by an aioslsk bug (now fixed): files of an album already imported
+        were put back in the queue and downloaded again. Those rows are received, they are closed."""
+        async with self.db.session() as s:
+            rows = list((await s.execute(
+                select(Transfer).join(Candidate, Candidate.id == Transfer.candidate_id).where(
+                    Candidate.status == CandidateStatus.IMPORTED,
+                    Transfer.direction == "download",
+                    Transfer.state.not_in(["complete", "failed", "aborted"]),
+                )
+            )).scalars())
+            for t in rows:
+                t.state = TransferState.COMPLETE
+                t.bytes_transferred = t.size or t.bytes_transferred
+                t.speed = 0
+                t.place_in_queue = None
+                t.remotely_queued = False
+            await s.commit()
+        if rows:
+            await self.journal.emit("transfer.repaired_requeued", M("transfer.repaired_requeued", n=len(rows)))
 
     async def _merge_orphan_downloads(self) -> None:
-        """Répare les doublons laissés par d'anciennes versions : une relance créait une ligne sans
-        lien vers son album. On replie l'orpheline sur la ligne d'origine, qui garde ce lien."""
+        """Repairs duplicates left by older versions: a retry created a row without its album link.
+        The orphan is folded into the original row, which keeps the link."""
         merged = 0
         async with self.db.session() as s:
             orphans = list(
@@ -128,14 +175,46 @@ class Core:
             await s.commit()
         if merged:
             await self.journal.emit(
-                "transfer.repaired", f"{merged} transfert(s) relancé(s) rattaché(s) à leur album d'origine"
+                "transfer.repaired", M("transfer.repaired", n=merged)
             )
+
+    def _read_forwarded_port(self) -> int | None:
+        path = self.env.forwarded_port_file
+        if not path:
+            return None
+        try:
+            port = int(path.read_text().strip())
+        except (OSError, ValueError):
+            return None
+        return port if 1024 <= port <= 65535 else None
+
+    async def _port_loop(self) -> None:
+        """Behind gluetun: follows the port the VPN forwards (it changes on each reconnection)."""
+        waiting_logged = False
+        while True:
+            await asyncio.sleep(20)
+            port = self._read_forwarded_port()
+            if port is None:
+                if not waiting_logged and not self.engine.forwarded_port:
+                    waiting_logged = True
+                    await self.journal.emit(
+                        "network.port_waiting", M("network.port_waiting", path=str(self.env.forwarded_port_file)),
+                        level="warning",
+                    )
+                continue
+            if port != self.engine.forwarded_port:
+                await self.journal.emit(
+                    "network.port_forwarded", M("network.port_forwarded", port=port, previous=self.engine.forwarded_port or "—"),
+                )
+                await self.restart_engine()
 
     async def restart_engine(self) -> None:
         cfg = (await self.settings.get()).soulseek
+        if self.env.forwarded_port_file:
+            self.engine.forwarded_port = self._read_forwarded_port()
         rules = await self.shares.rules()
         await self.engine.start(cfg, rules)
-        # Relance des téléchargements non terminés (aioslsk ne garde pas d'état entre deux démarrages)
+        # Restart unfinished downloads (aioslsk keeps no state between runs)
         self._tasks.append(asyncio.create_task(self._resume_downloads()))
 
     async def _resume_downloads(self) -> None:
@@ -151,13 +230,13 @@ class Core:
                     await s.execute(
                         select(Transfer).where(
                             Transfer.direction == "download",
-                            Transfer.state.in_(["queued", "initializing", "transferring", "paused"]),
+                            Transfer.state.in_(["queued", "initializing", "transferring"]),
                         )
                     )
                 ).scalars()
             )
         for cid in {t.candidate_id for t in pending if t.candidate_id}:
-            await self.hunter.reactivate(cid, "fichier(s) relancé(s) au redémarrage")
+            await self.hunter.reactivate(cid, M("reason.restart_retried", n=2))
         for t in pending:
             if not t.local_path:
                 continue
@@ -165,12 +244,12 @@ class Core:
             try:
                 await self.engine.download(t.username, t.remote_path, t.local_path.rsplit("/", 1)[0])
             except Exception as e:
-                log.warning("reprise %s : %s", t.remote_path, e)
+                log.warning("resume %s: %s", t.remote_path, e)
         if pending:
-            await self.journal.emit("download.resumed", f"{len(pending)} téléchargement(s) repris après redémarrage")
+            await self.journal.emit("download.resumed", M("download.resumed", n=len(pending)))
 
     async def _queue_loop(self) -> None:
-        """Demande régulièrement aux pairs notre position dans leur file d'envoi."""
+        """Regularly asks peers for our position in their upload queue."""
         while True:
             await asyncio.sleep(90)
             if not self.engine.logged_in:
@@ -180,7 +259,7 @@ class Core:
             except asyncio.CancelledError:
                 raise
             except Exception:
-                log.exception("positions en file")
+                log.exception("queue positions")
 
     async def _sync_loop(self) -> None:
         while True:
@@ -204,7 +283,7 @@ class Core:
             except asyncio.CancelledError:
                 raise
             except Exception:
-                log.exception("synchronisation MusicBrainz")
+                log.exception("MusicBrainz sync")
 
     async def stop(self) -> None:
         for t in self._tasks:

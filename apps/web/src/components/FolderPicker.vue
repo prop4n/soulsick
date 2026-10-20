@@ -2,11 +2,13 @@
 import { ArrowUpIcon, FolderIcon } from '@lucide/vue'
 import { useQuery } from '@tanstack/vue-query'
 import { ref } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
 import { api } from '@/lib/api'
 
-/** Navigateur de dossiers du serveur (dans le conteneur), pour choisir ce qu'on partage. */
+/** Server folder browser (inside the container), to pick what to share. */
+const { t } = useI18n()
 const model = defineModel<string>({ required: true })
 const path = ref(model.value || '/')
 
@@ -29,7 +31,7 @@ function enter(p: string) {
         variant="ghost"
         size="icon-xs"
         :disabled="!data?.parent"
-        aria-label="Dossier parent"
+        :aria-label="t('folderPicker.parent')"
         @click="data?.parent && enter(data.parent)"
       >
         <ArrowUpIcon />
@@ -54,7 +56,7 @@ function enter(p: string) {
         <span class="truncate">{{ d }}</span>
       </button>
       <p v-if="data && !data.dirs.length" class="p-3 text-[12px] text-faint">
-        Aucun sous-dossier.
+        {{ t('folderPicker.empty') }}
       </p>
     </div>
   </div>

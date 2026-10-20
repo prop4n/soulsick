@@ -15,6 +15,7 @@ services:
     volumes:
       - ./data/config:/config        # base SQLite, pochettes en cache
       - ./data/music:/music          # bibliothèque rangée par Soulsick (remplace par ton dossier musique)
+      #   sans ce montage, Soulsick refuse de ranger quoi que ce soit (la musique resterait dans le conteneur)
       - ./data/downloads:/downloads  # réception avant import
       - ./data/shares:/shares:ro     # dossiers supplémentaires à partager (optionnel)
 

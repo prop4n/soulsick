@@ -1,4 +1,5 @@
 import asyncio
+import os
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -7,6 +8,7 @@ from sqlalchemy import desc, func, select
 
 from ..core import Core
 from ..journal import event_to_dict
+from ..messages import M, UserError, set_reason
 from ..models import (
     AlbumStatus,
     Artist,
@@ -16,6 +18,7 @@ from ..models import (
     CandidateStatus,
     Event,
     LibraryFile,
+    QualityProfile,
     Release,
     ReleaseGroup,
     SearchRun,
@@ -26,12 +29,13 @@ from ..musicbrainz import MusicBrainzError
 from ..slsk.engine import EngineUnavailable
 from ..services.transfers import transfer_to_dict
 from .deps import get_core, require_user
+from .errors import as_http, http_error
 from .serializers import artist_dict, candidate_dict, iso, library_file_dict, release_dict, rg_dict
 
 router = APIRouter(prefix="/api", tags=["catalog"], dependencies=[Depends(require_user)])
 
 
-# --- Artistes -------------------------------------------------------------------
+# --- Artists --------------------------------------------------------------------
 
 
 @router.get("/musicbrainz/artists")
@@ -164,18 +168,23 @@ async def patch_artist(aid: int, body: ArtistPatch, core: Core = Depends(get_cor
             setattr(a, k, v)
         await s.commit()
         await s.refresh(a)
+    profile_name = None
+    if changes.get("quality_profile_id"):
+        async with core.db.session() as s:
+            p = await s.get(QualityProfile, changes["quality_profile_id"])
+            profile_name = p.name if p else f"#{changes['quality_profile_id']}"
     labels = {
-        "monitored": lambda v: "suivi activé" if v else "suivi désactivé",
-        "mode": lambda v: "mode automatique" if v == "auto" else "mode validation",
-        "quality_profile_id": lambda v: f"profil qualité #{v}",
-        "primary_types": lambda v: "types : " + ", ".join(v),
-        "secondary_types": lambda v: "secondaires : " + (", ".join(v) or "aucun"),
+        "monitored": lambda v: M("artist.change.monitored_on" if v else "artist.change.monitored_off"),
+        "mode": lambda v: M("artist.change.mode", value=M("word.automatic" if v == "auto" else "word.ask_me")),
+        "quality_profile_id": lambda v: M("artist.change.profile", value=profile_name),
+        "primary_types": lambda v: M("artist.change.primary_types", value=", ".join(v)),
+        "secondary_types": lambda v: M("artist.change.secondary_types", value=", ".join(v) or M("word.none")),
     }
-    await core.journal.emit(
-        "artist.updated",
-        f"{a.name} : " + ", ".join(labels[k](v) for k, v in changes.items() if k in labels),
-        artist_id=aid, data=changes,
-    )
+    parts: list = []
+    for k, v in changes.items():
+        if k in labels:
+            parts += [", ", labels[k](v)] if parts else [labels[k](v)]
+    await core.journal.emit("artist.updated", M("artist.updated", name=a.name, changes=parts), artist_id=aid, data=changes)
     if "primary_types" in changes or "secondary_types" in changes:
         await core.catalog.apply_type_filter(aid)
     stats = await _artist_stats(core, [aid])
@@ -223,6 +232,89 @@ async def hunt_artist(aid: int, core: Core = Depends(get_core)) -> dict:
 
     asyncio.create_task(run())
     return {"queued": len(ids)}
+
+
+# --- Library ----------------------------------------------------------------------
+
+
+@router.get("/library/albums")
+async def library_albums(core: Core = Depends(get_core)) -> list[dict]:
+    """Albums shelved in /music, newest first, with where they came from."""
+    async with core.db.session() as s:
+        rows = (
+            await s.execute(
+                select(ReleaseGroup, Artist)
+                .join(Artist, Artist.id == ReleaseGroup.artist_id)
+                .where(ReleaseGroup.imported_path.is_not(None))
+                .order_by(desc(ReleaseGroup.updated_at))
+            )
+        ).all()
+        ids = [rg.id for rg, _ in rows]
+        sources: dict[int, list[str]] = {}
+        if ids:
+            for rid, user in (
+                await s.execute(
+                    select(Candidate.release_group_id, Candidate.username)
+                    .where(Candidate.release_group_id.in_(ids), Candidate.status == CandidateStatus.IMPORTED)
+                )
+            ).all():
+                sources.setdefault(rid, []).append(user)
+            counts = dict(
+                (
+                    await s.execute(
+                        select(LibraryFile.release_group_mbid, func.count())
+                        .where(LibraryFile.release_group_mbid.in_([rg.mbid for rg, _ in rows]))
+                        .group_by(LibraryFile.release_group_mbid)
+                    )
+                ).all()
+            )
+        else:
+            counts = {}
+    return [
+        rg_dict(rg, a) | {"sources": sources.get(rg.id, []), "file_count": counts.get(rg.mbid, 0)}
+        for rg, a in rows
+    ]
+
+
+@router.get("/library/manual")
+async def library_manual(core: Core = Depends(get_core)) -> list[dict]:
+    """Finished manual downloads (outside the library), grouped by download folder."""
+    async with core.db.session() as s:
+        ts = list(
+            (
+                await s.execute(
+                    select(Transfer)
+                    .where(Transfer.direction == "download", Transfer.candidate_id.is_(None), Transfer.state == "complete")
+                    .order_by(desc(Transfer.completed_at))
+                    .limit(2000)
+                )
+            ).scalars()
+        )
+    folders: dict[str, dict] = {}
+    for t in ts:
+        d = os.path.dirname(t.local_path or "")
+        f = folders.setdefault(d, {
+            "dir": d, "username": t.username, "files": 0, "size": 0, "completed_at": iso(t.completed_at),
+            "present": 0, "shelved": 0, "albums": [],
+        })
+        f["files"] += 1
+        f["size"] += t.size or 0
+        if t.shelved_path:
+            f["shelved"] += 1
+            if t.release_group_id and t.release_group_id not in f["albums"]:
+                f["albums"].append(t.release_group_id)
+        elif t.local_path and os.path.isfile(t.local_path):
+            f["present"] += 1
+    return list(folders.values())
+
+
+@router.get("/library/manual/folder")
+async def library_manual_folder(dir: str, core: Core = Depends(get_core)) -> dict:
+    """A manual download folder ready to be identified and shelved (same flow as existing music)."""
+    try:
+        return await core.existing.describe(dir)
+    except ValueError as e:
+        raise as_http(e) from e
 
 
 # --- Albums ---------------------------------------------------------------------
@@ -332,13 +424,15 @@ async def patch_album(rid: int, body: AlbumPatch, core: Core = Depends(get_core)
             rg = await s.get(ReleaseGroup, rid)
             rel = await s.get(Release, body.selected_release_id)
             if not rg or not rel or rel.release_group_id != rid:
-                raise HTTPException(400, "Édition invalide")
+                raise http_error(400, "error.invalid_edition")
             rg.selected_release_id = rel.id
             await s.commit()
         await core.journal.emit(
             "album.release_selected",
-            f"« {rg.title} » : édition retenue → {rel.title} ({rel.date or '?'}, {rel.country or '?'}, "
-            f"{rel.formats}, {rel.track_count} pistes)",
+            M(
+                "album.release_selected", title=rg.title, release=rel.title, date=rel.date or "?",
+                country=rel.country or "?", formats=rel.formats, n=rel.track_count,
+            ),
             artist_id=rg.artist_id, release_group_id=rid,
         )
     async with core.db.session() as s:
@@ -359,28 +453,68 @@ async def approve(cid: int, core: Core = Depends(get_core)) -> dict:
         if not c:
             raise HTTPException(404)
         if c.status not in (CandidateStatus.PROPOSED, CandidateStatus.REJECTED, CandidateStatus.FAILED):
-            raise HTTPException(409, "Ce candidat est déjà en cours ou utilisé")
+            raise http_error(409, "error.candidate_busy")
         started = (await s.execute(select(Transfer.id).where(Transfer.candidate_id == cid).limit(1))).first()
     if started:
-        # Déjà entamé : on reprend sans retélécharger ce qui est arrivé
+        # Already started: resume without downloading again what arrived
         missing = await core.hunter.resume_candidate(cid)
         return {"ok": True, "resumed": True, "missing": missing}
     await core.hunter.start_download(cid, by="user")
     return {"ok": True, "resumed": False}
 
 
+@router.post("/albums/{rid}/import")
+async def import_now(rid: int, core: Core = Depends(get_core)) -> dict:
+    """Import what was received for this album now (all sources together, tracks already shelved count)."""
+    await core.guard.check()
+    try:
+        core.guard.require()
+    except UserError as e:
+        raise as_http(e, 409) from e
+    async with core.db.session() as s:
+        rows = (await s.execute(
+            select(Transfer.candidate_id, func.count())
+            .where(Transfer.release_group_id == rid, Transfer.candidate_id.is_not(None), Transfer.state == "complete")
+            .group_by(Transfer.candidate_id)
+            .order_by(func.count().desc())
+        )).all()
+    if not rows:
+        raise http_error(400, "error.nothing_received")
+    asyncio.create_task(core.importer.import_candidate(rows[0][0]))
+    return {"ok": True}
+
+
+@router.post("/candidates/{cid}/abandon")
+async def abandon_candidate(cid: int, core: Core = Depends(get_core)) -> dict:
+    """Drop a source that doesn't deliver: its unfinished files are cancelled."""
+    return {"ok": True, "cancelled": await core.hunter.abandon(cid)}
+
+
+@router.post("/albums/{rid}/cancel")
+async def cancel_album(rid: int, core: Core = Depends(get_core)) -> dict:
+    """Stop downloading this album: every active source is dropped (received files are kept)."""
+    async with core.db.session() as s:
+        ids = list((await s.execute(select(Candidate.id).where(
+            Candidate.release_group_id == rid, Candidate.status == CandidateStatus.CHOSEN,
+        ))).scalars())
+    n = 0
+    for cid in ids:
+        n += await core.hunter.abandon(cid)
+    return {"ok": True, "cancelled": n}
+
+
 @router.post("/albums/{rid}/dismiss")
 async def dismiss(rid: int, core: Core = Depends(get_core)) -> dict:
-    """Refuse toutes les propositions : l'album repasse en « recherché »."""
+    """Rejects every proposal: the album goes back to wanted."""
     async with core.db.session() as s:
         rg = await s.get(ReleaseGroup, rid)
         if not rg:
             raise HTTPException(404)
         rg.status = AlbumStatus.WANTED if rg.monitored else AlbumStatus.IGNORED
-        rg.status_reason = "Propositions refusées"
+        set_reason(rg, "status_reason", M("reason.dismissed"))
         await s.commit()
     await core.journal.emit(
-        "hunt.dismissed", f"« {rg.title} » : propositions refusées, nouvel essai plus tard",
+        "hunt.dismissed", M("hunt.dismissed", title=rg.title),
         artist_id=rg.artist_id, release_group_id=rid,
     )
     return {"ok": True}
@@ -401,7 +535,7 @@ class CompleteIn(BaseModel):
 
 @router.post("/albums/{rid}/complete")
 async def complete(rid: int, body: CompleteIn, core: Core = Depends(get_core)) -> dict:
-    """Panachage : prendre chez un autre pair uniquement les pistes manquantes choisies."""
+    """Mixing: take only the chosen missing tracks from another peer."""
     async with core.db.session() as s:
         c = await s.get(Candidate, body.candidate_id)
         if not c or c.release_group_id != rid:
@@ -409,9 +543,9 @@ async def complete(rid: int, body: CompleteIn, core: Core = Depends(get_core)) -
     try:
         n = await core.hunter.complete_from(body.candidate_id, body.track_ids)
     except ValueError as e:
-        raise HTTPException(400, str(e)) from e
+        raise as_http(e) from e
     except EngineUnavailable as e:
-        raise HTTPException(503, str(e)) from e
+        raise as_http(e) from e
     return {"ok": True, "files": n}
 
 
@@ -434,5 +568,5 @@ async def apply_plan(cid: int, body: PlanIn, core: Core = Depends(get_core)) -> 
     try:
         await core.importer.apply_plan(cid, body.plan, body.release_id, by_user=True)
     except ValueError as e:
-        raise HTTPException(400, str(e)) from e
+        raise as_http(e) from e
     return {"ok": True}

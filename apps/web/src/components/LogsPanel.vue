@@ -3,34 +3,25 @@ import type { Activity, LogLine } from '@/lib/types'
 import { ArrowDownToLineIcon, EraserIcon, PauseIcon, PlayIcon, SearchIcon } from '@lucide/vue'
 import { useQuery } from '@tanstack/vue-query'
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
-import PageHeader from '@/components/PageHeader.vue'
+import { useI18n } from 'vue-i18n'
 import { Button } from '@/components/ui/button'
 import { InputGroup, InputGroupAddon, InputGroupInput } from '@/components/ui/input-group'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { api } from '@/lib/api'
-import { speed } from '@/lib/format'
 import { cn } from '@/lib/utils'
+import { intlLocale } from '@/i18n'
 import { useLive } from '@/stores/live'
 
 /**
- * Logs techniques en direct : ce que le moteur fait réellement (connexions aux pairs,
- * réponses de recherche, transferts, MusicBrainz…). Le Journal, lui, raconte les décisions.
+ * Live engine logs: what the engine actually does (peer connections, search
+ * responses, transfers, MusicBrainz…). The journal tells the decisions.
  */
+const { t } = useI18n()
 const live = useLive()
 
-const SOURCES = [
-  { key: 'recherche', label: 'Recherches' },
-  { key: 'soulseek', label: 'Réseau Soulseek' },
-  { key: 'chasse', label: 'Chasse' },
-  { key: 'import', label: 'Import' },
-  { key: 'musicbrainz', label: 'MusicBrainz' },
-  { key: 'journal', label: 'Journal' },
-  { key: 'app', label: 'App' },
-  { key: 'http', label: 'HTTP' },
-  { key: 'web', label: 'Web' },
-] as const
+const SOURCES = ['search', 'soulseek', 'hunt', 'import', 'musicbrainz', 'journal', 'app', 'http', 'web'] as const
 
-const sources = ref<string[]>(['recherche', 'soulseek', 'chasse', 'import', 'musicbrainz', 'journal', 'app'])
+const sources = ref<string[]>(['search', 'soulseek', 'hunt', 'import', 'musicbrainz', 'journal', 'app'])
 const level = ref<'info' | 'warning' | 'error'>('info')
 const q = ref('')
 const paused = ref(false)
@@ -92,7 +83,7 @@ watch(() => lines.value.length, () => {
 
 function time(ts: string) {
   const d = new Date(ts)
-  return `${d.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}.${String(d.getMilliseconds()).padStart(3, '0')}`
+  return `${d.toLocaleTimeString(intlLocale(), { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false })}.${String(d.getMilliseconds()).padStart(3, '0')}`
 }
 
 const levelClass: Record<string, string> = {
@@ -103,8 +94,8 @@ const levelClass: Record<string, string> = {
   critical: 'text-destructive',
 }
 const sourceClass: Record<string, string> = {
-  recherche: 'text-primary',
-  chasse: 'text-primary/80',
+  search: 'text-primary',
+  hunt: 'text-primary/80',
   soulseek: 'text-muted-foreground',
   import: 'text-success',
 }
@@ -112,91 +103,76 @@ const sourceClass: Record<string, string> = {
 
 <template>
   <div class="flex flex-col">
-    <PageHeader
-      eyebrow="Système"
-      title="Logs en direct"
-      description="Le travail brut du moteur, ligne par ligne : réponses des pairs, connexions, transferts, requêtes MusicBrainz. Le Journal raconte les décisions ; ici, tu vois comment elles se font."
-    />
-
-    <!-- En ce moment -->
-    <section class="mb-5 grid gap-px overflow-hidden rounded-lg border bg-border sm:grid-cols-2 xl:grid-cols-4">
+    <!-- Right now: what the hunter and the network are busy with -->
+    <section class="mb-5 grid gap-px overflow-hidden rounded-lg border bg-border sm:grid-cols-3">
       <div class="flex flex-col gap-1.5 bg-card p-4">
-        <span class="legend">Chasse</span>
-        <span v-if="activity?.hunter.current" class="flex items-center gap-2 text-[12.5px] text-primary">
-          <span class="size-1.5 animate-pulse rounded-full bg-primary" />
-          <span class="truncate">{{ activity.hunter.current.step === 'search' ? `requête « ${activity.hunter.current.query} »` : activity.hunter.current.label }}</span>
-        </span>
-        <span v-else class="text-[12.5px] text-faint">au repos</span>
-      </div>
-      <div class="flex flex-col gap-1.5 bg-card p-4">
-        <span class="legend">Recherches actives (60 s)</span>
+        <span class="legend">{{ t('activity.logs.activeSearches') }}</span>
         <template v-if="activity?.searches.length">
           <span v-for="s in activity.searches.slice(0, 3)" :key="s.ticket" class="flex items-baseline gap-2 text-[12.5px]">
-            <span class="truncate">« {{ s.query }} »</span>
-            <span class="ml-auto shrink-0 font-mono text-[11px] text-muted-foreground tnum">{{ s.responses }} pairs · {{ s.files }} fichiers · {{ Math.round(s.age) }} s</span>
+            <span class="truncate">{{ t('common.quoted', { text: s.query }) }}</span>
+            <span class="ml-auto shrink-0 font-mono text-[11px] text-muted-foreground tnum">{{ t('activity.logs.searchStats', { peers: s.responses, files: s.files, age: Math.round(s.age) }) }}</span>
           </span>
         </template>
-        <span v-else class="text-[12.5px] text-faint">aucune</span>
+        <span v-else class="text-[12.5px] text-faint">{{ t('common.none') }}</span>
       </div>
       <div class="flex flex-col gap-1.5 bg-card p-4">
-        <span class="legend">Transferts</span>
-        <span class="font-mono text-[12.5px] tnum">
-          ↓ {{ speed(live.engine?.download_speed) }} · ↑ {{ speed(live.engine?.upload_speed) }}
+        <span class="legend">{{ t('activity.logs.retries') }}</span>
+        <span :class="cn('text-[12.5px]', activity?.retrying ? 'text-foreground' : 'text-faint')">
+          {{ activity?.retrying ? t('activity.logs.retriesScheduled', activity.retrying) : t('common.none') }}
         </span>
-        <span class="text-[11.5px] text-faint">{{ activity?.retrying ? `${activity.retrying} nouvel(s) essai(s) programmé(s)` : 'aucun essai en attente' }}</span>
       </div>
       <div class="flex flex-col gap-1.5 bg-card p-4">
-        <span class="legend">Bibliothèque</span>
+        <span class="legend">{{ t('activity.logs.libraryScan') }}</span>
         <span :class="cn('text-[12.5px]', activity?.library_scanning ? 'text-primary' : 'text-faint')">
-          {{ activity?.library_scanning ? 'analyse de /music en cours…' : 'au repos' }}
+          {{ activity?.library_scanning ? t('activity.logs.scanning') : t('activity.logs.idle') }}
         </span>
       </div>
     </section>
 
-    <!-- Filtres -->
+    <!-- Filters -->
     <div class="mb-3 flex flex-col gap-3">
       <div class="flex flex-col gap-3 lg:flex-row lg:items-center">
         <InputGroup class="lg:max-w-xs">
           <InputGroupAddon>
             <SearchIcon />
           </InputGroupAddon>
-          <InputGroupInput v-model="q" placeholder="Filtrer (pseudo, fichier, requête…)" />
+          <InputGroupInput v-model="q" :placeholder="t('activity.logs.filterPlaceholder')" />
         </InputGroup>
         <ToggleGroup v-model="level" type="single" variant="outline" size="sm" class="justify-start">
           <ToggleGroupItem value="info">
-            Tout
+            {{ t('common.all') }}
           </ToggleGroupItem>
           <ToggleGroupItem value="warning">
-            Avertissements
+            {{ t('common.warnings') }}
           </ToggleGroupItem>
           <ToggleGroupItem value="error">
-            Erreurs
+            {{ t('common.errors') }}
           </ToggleGroupItem>
         </ToggleGroup>
         <div class="flex items-center gap-1.5 lg:ml-auto">
           <Button variant="outline" size="sm" @click="togglePause">
             <PlayIcon v-if="paused" data-icon="inline-start" />
             <PauseIcon v-else data-icon="inline-start" />
-            {{ paused ? 'Reprendre' : 'Pause' }}
+            {{ paused ? t('common.resume') : t('common.pause') }}
           </Button>
           <Button variant="ghost" size="sm" class="text-muted-foreground" @click="clearedAt = live.logs.at(-1)?.id ?? 0">
             <EraserIcon data-icon="inline-start" />
-            Vider l’affichage
+            {{ t('activity.logs.clear') }}
           </Button>
         </div>
       </div>
       <ToggleGroup v-model="sources" type="multiple" variant="outline" size="sm" class="flex-wrap justify-start">
-        <ToggleGroupItem v-for="s in SOURCES" :key="s.key" :value="s.key">
-          {{ s.label }}
+        <ToggleGroupItem v-for="s in SOURCES" :key="s" :value="s">
+          {{ t(`activity.logs.sources.${s}`) }}
         </ToggleGroupItem>
       </ToggleGroup>
     </div>
 
-    <!-- Flux -->
+    <!-- Stream -->
     <div class="relative">
       <div
         ref="box"
-        class="scrollbar-thin h-[calc(100svh-26rem)] min-h-80 overflow-y-auto rounded-lg border bg-well px-3 py-2 font-mono text-[11.5px] leading-[1.55]"
+        class="scrollbar-thin h-[calc(100svh-28rem)] min-h-80 overflow-y-auto rounded-lg border bg-well px-3 py-2 font-mono text-[11.5px] leading-[1.55]"
         @scroll="onScroll"
       >
         <div v-for="l in lines" :key="l.id" class="flex gap-3 border-b border-border/40 py-[3px] last:border-b-0">
@@ -206,7 +182,7 @@ const sourceClass: Record<string, string> = {
           <span :class="cn('min-w-0 break-words', l.level === 'error' ? 'text-destructive' : 'text-foreground/85')">{{ l.message }}</span>
         </div>
         <p v-if="!lines.length" class="py-10 text-center font-sans text-[12.5px] text-faint">
-          Rien pour ces filtres. Lance une recherche : chaque réponse de pair s’affichera ici.
+          {{ t('activity.logs.empty') }}
         </p>
       </div>
       <Button
@@ -217,11 +193,11 @@ const sourceClass: Record<string, string> = {
         @click="follow = true; scrollDown()"
       >
         <ArrowDownToLineIcon data-icon="inline-start" />
-        Dernières lignes
+        {{ t('activity.logs.latest') }}
       </Button>
     </div>
     <p class="mt-2 text-[11.5px] text-faint">
-      {{ paused ? 'En pause — ' : '' }}{{ lines.length }} ligne(s) affichée(s) · les 3000 dernières sont gardées en mémoire (perdues au redémarrage).
+      {{ paused ? t('activity.logs.pausedPrefix') : '' }}{{ t('activity.logs.footer', lines.length) }}
     </p>
   </div>
 </template>

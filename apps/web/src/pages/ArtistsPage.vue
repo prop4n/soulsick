@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { PlusIcon, SearchIcon, UsersRoundIcon } from '@lucide/vue'
 import { computed, ref } from 'vue'
+import { useI18n } from 'vue-i18n'
 import AddArtistDialog from '@/components/AddArtistDialog.vue'
 import CoverArt from '@/components/CoverArt.vue'
 import PageHeader from '@/components/PageHeader.vue'
@@ -12,6 +13,7 @@ import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { useArtists } from '@/composables/queries'
 import { cn } from '@/lib/utils'
 
+const { t } = useI18n()
 const { data: artists, isPending } = useArtists()
 const q = ref('')
 const filter = ref<'all' | 'attention' | 'auto' | 'paused'>('all')
@@ -39,15 +41,11 @@ function completion(a: { stats: { imported: number, monitored: number } }) {
 
 <template>
   <div class="flex flex-col">
-    <PageHeader
-      eyebrow="Bibliothèque"
-      title="Artistes suivis"
-      description="Chaque artiste a son mode (automatique ou validation), son profil qualité et les types de sorties que tu veux."
-    >
+    <PageHeader :title="t('artists.title')" :description="t('artists.description')">
       <template #actions>
         <Button size="sm" @click="addOpen = true">
           <PlusIcon data-icon="inline-start" />
-          Suivre un artiste
+          {{ t('common.followArtist') }}
         </Button>
       </template>
     </PageHeader>
@@ -57,20 +55,20 @@ function completion(a: { stats: { imported: number, monitored: number } }) {
         <InputGroupAddon>
           <SearchIcon />
         </InputGroupAddon>
-        <InputGroupInput v-model="q" placeholder="Filtrer…" />
+        <InputGroupInput v-model="q" :placeholder="t('common.filter')" />
       </InputGroup>
       <ToggleGroup v-model="filter" type="single" variant="outline" size="sm" class="justify-start">
         <ToggleGroupItem value="all">
-          Tous
+          {{ t('common.all') }}
         </ToggleGroupItem>
         <ToggleGroupItem value="attention">
-          À traiter
+          {{ t('artists.filters.attention') }}
         </ToggleGroupItem>
         <ToggleGroupItem value="auto">
-          Automatiques
+          {{ t('artists.filters.auto') }}
         </ToggleGroupItem>
         <ToggleGroupItem value="paused">
-          En pause
+          {{ t('artists.filters.paused') }}
         </ToggleGroupItem>
       </ToggleGroup>
       <span class="font-mono text-[11.5px] text-faint tnum sm:ml-auto">{{ list.length }} / {{ artists?.length ?? 0 }}</span>
@@ -83,20 +81,20 @@ function completion(a: { stats: { imported: number, monitored: number } }) {
       </div>
     </div>
 
-    <Empty v-else-if="!artists?.length" class="rounded-lg border border-dashed py-16">
+    <Empty v-else-if="!artists?.length" class="rounded-xl bg-card/50 py-16">
       <EmptyHeader>
         <EmptyMedia variant="icon">
           <UsersRoundIcon />
         </EmptyMedia>
-        <EmptyTitle>Aucun artiste suivi</EmptyTitle>
+        <EmptyTitle>{{ t('artists.empty') }}</EmptyTitle>
         <EmptyDescription>
-          Ajoute un artiste depuis MusicBrainz : Soulsick récupère sa discographie et sait ce qui manque dans ta bibliothèque.
+          {{ t('artists.emptyHint') }}
         </EmptyDescription>
       </EmptyHeader>
       <EmptyContent>
         <Button size="sm" @click="addOpen = true">
           <PlusIcon data-icon="inline-start" />
-          Suivre un artiste
+          {{ t('common.followArtist') }}
         </Button>
       </EmptyContent>
     </Empty>
@@ -118,8 +116,8 @@ function completion(a: { stats: { imported: number, monitored: number } }) {
           <span
             v-if="a.stats.attention"
             class="absolute top-2 right-2 rounded-[4px] bg-background/90 px-1.5 font-mono text-[10.5px] leading-[18px] text-warning ring-1 ring-warning/30 backdrop-blur tnum"
-          >{{ a.stats.attention }} à traiter</span>
-          <!-- Tranche : progression des albums suivis présents dans la bibliothèque -->
+          >{{ t('artists.toHandle', { n: a.stats.attention }) }}</span>
+          <!-- Edge: share of followed albums already in the library -->
           <div class="absolute inset-x-0 bottom-0 h-[3px] bg-background/60">
             <div class="h-full bg-success/80" :style="{ width: `${completion(a) * 100}%` }" />
           </div>
@@ -128,8 +126,8 @@ function completion(a: { stats: { imported: number, monitored: number } }) {
           <span class="truncate text-[13.5px] font-medium group-hover:text-primary">{{ a.name }}</span>
           <div class="flex items-center gap-2 text-[11.5px] text-faint">
             <span class="font-mono tnum">{{ a.stats.imported }}/{{ a.stats.monitored }}</span>
-            <span>rangés</span>
-            <span class="ml-auto">{{ !a.monitored ? 'en pause' : a.mode === 'auto' ? 'auto' : 'validation' }}</span>
+            <span>{{ t('artists.inLibrary') }}</span>
+            <span class="ml-auto">{{ !a.monitored ? t('artists.mode.paused') : t(`artists.mode.${a.mode}`) }}</span>
           </div>
         </div>
       </RouterLink>

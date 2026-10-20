@@ -8,6 +8,7 @@ import type {
   FormatDef,
   JournalEvent,
   QualityProfile,
+  StorageDisk,
   ReleaseGroup,
   Transfer,
 } from '@/lib/types'
@@ -72,3 +73,10 @@ export function useEvents(params: Ref<Record<string, string | number | undefined
     queryFn: () => api.get<JournalEvent[]>(`/events?${qs.value}`),
   })
 }
+
+export const useStorage = () => useQuery({
+  queryKey: ['storage'],
+  queryFn: () => api.get<{ disks: StorageDisk[] }>('/storage'),
+  staleTime: 60_000,
+  refetchInterval: 5 * 60_000,
+})

@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
+from ..messages import M, set_reason
 from ..models import AlbumStatus, Artist, ArtistReleaseGroup, QualityProfile, Release, ReleaseGroup, Track, of_artist
 from ..musicbrainz import pick_default_release
 
@@ -16,8 +17,8 @@ if TYPE_CHECKING:
 
 DEFAULT_PROFILES = [
     ("Lossless", ["flac-24", "flac", "alac", "wav"], "flac"),
-    ("Lossless puis MP3", ["flac-24", "flac", "alac", "mp3-320", "mp3-v0"], "flac"),
-    ("Haute qualité (tout)", ["flac-24", "flac", "alac", "wav", "mp3-320", "mp3-v0", "aac-256", "opus"], "mp3-320"),
+    ("Lossless then MP3", ["flac-24", "flac", "alac", "mp3-320", "mp3-v0"], "flac"),
+    ("High quality (anything)", ["flac-24", "flac", "alac", "wav", "mp3-320", "mp3-v0", "aac-256", "opus"], "mp3-320"),
     ("MP3 320", ["mp3-320", "mp3-v0"], "mp3-320"),
 ]
 
@@ -50,7 +51,7 @@ def _set_monitored(rg: ReleaseGroup, monitored: bool) -> bool:
     rg.monitored = monitored
     if rg.status not in _KEEP_STATUS:
         rg.status = AlbumStatus.WANTED if monitored else AlbumStatus.IGNORED
-        rg.status_reason = None
+        set_reason(rg, "status_reason", None)
     return True
 
 
@@ -98,7 +99,7 @@ class CatalogService:
             await s.refresh(a)
         await self.core.journal.emit(
             "artist.added",
-            f"Artiste ajouté : {a.name} (mode {'automatique' if mode == 'auto' else 'validation'})",
+            M("artist.added", name=a.name, mode=M("word.automatic" if mode == "auto" else "word.ask_me")),
             artist_id=a.id,
             data={"mbid": mbid, "primary_types": primary_types, "secondary_types": secondary_types},
         )
@@ -116,7 +117,7 @@ class CatalogService:
             groups = await self.core.mb.artist_release_groups(mbid)
         except Exception as e:
             await self.core.journal.emit(
-                "musicbrainz.sync_failed", f"Synchronisation MusicBrainz échouée pour {name} : {e}",
+                "musicbrainz.sync_failed", M("musicbrainz.sync_failed", name=name, error=str(e)),
                 level="error", artist_id=artist_id,
             )
             return
@@ -181,9 +182,13 @@ class CatalogService:
 
         await self.core.journal.emit(
             "musicbrainz.synced",
-            f"Discographie de {name} synchronisée : {len(groups)} sorties sur MusicBrainz"
-            + (f", {len(added)} nouvelle(s) suivie(s) : {', '.join(added[:5])}" if added else "")
-            + (f", {len(shared)} partagée(s) avec un autre artiste suivi ({', '.join(shared[:3])})" if shared else ""),
+            M(
+                "musicbrainz.synced", name=name, total=len(groups),
+                details=[
+                    *([M("musicbrainz.detail.added", n=len(added), titles=", ".join(added[:5]))] if added else []),
+                    *([M("musicbrainz.detail.shared", n=len(shared), titles=", ".join(shared[:3]))] if shared else []),
+                ],
+            ),
             artist_id=artist_id,
             data={"total": len(groups), "new_monitored": added, "shared": shared},
         )
@@ -248,14 +253,14 @@ class CatalogService:
             rg.monitored = monitored
             if monitored and rg.status == AlbumStatus.IGNORED:
                 rg.status = AlbumStatus.WANTED
-                rg.status_reason = None
+                set_reason(rg, "status_reason", None)
             elif not monitored and rg.status in (AlbumStatus.WANTED, AlbumStatus.FAILED):
                 rg.status = AlbumStatus.IGNORED
             await s.commit()
             await s.refresh(rg)
         await self.core.journal.emit(
             "album.monitored" if monitored else "album.unmonitored",
-            f"« {rg.title} » {'ajouté aux albums recherchés' if monitored else 'n’est plus suivi'}",
+            M("album.monitored" if monitored else "album.unmonitored", title=rg.title),
             artist_id=rg.artist_id,
             release_group_id=rg.id,
         )
@@ -279,10 +284,9 @@ class CatalogService:
             await s.commit()
             name = artist.name
         if changed:
-            what = {"all": "suivies", "none": "plus suivies", "future": "suivies seulement si à venir"}[scope]
             await self.core.journal.emit(
                 "album.bulk",
-                f"{name} : {len(changed)} sortie(s){f' ({section})' if section else ''} {what}",
+                M(f"album.bulk.section.{scope}" if section else f"album.bulk.{scope}", name=name, n=len(changed), section=section),
                 artist_id=artist_id,
                 data={"scope": scope, "section": section, "titles": changed},
             )
@@ -308,7 +312,7 @@ class CatalogService:
         if changed:
             await self.core.journal.emit(
                 "album.bulk",
-                f"{name} : {len(changed)} sortie(s) d'un type désormais non suivi ne sont plus suivies",
+                M("album.bulk.types", name=name, n=len(changed)),
                 artist_id=artist_id,
                 data={"scope": "types", "titles": changed},
             )
@@ -338,7 +342,6 @@ class CatalogService:
             await s.commit()
         await self.core.journal.emit(
             "artist.removed",
-            f"Artiste retiré : {name} (les fichiers de /music sont conservés"
-            + (f" ; {kept} sortie(s) partagée(s) restent chez l'autre artiste)" if kept else ")"),
+            M("artist.removed_shared", name=name, n=kept, kept=kept) if kept else M("artist.removed", name=name),
             artist_id=artist_id
         )

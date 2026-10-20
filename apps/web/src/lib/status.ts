@@ -1,39 +1,49 @@
 import type { AlbumStatus, TransferStateName } from './types'
+import { t, te } from '@/i18n'
 
-/** La chaîne : les quatre étapes qu'un album traverse, de « recherché » à « rangé ». */
-export const CHAIN_STAGES = ['Recherché', 'Trouvé', 'Reçu', 'Rangé'] as const
+/** The chain: the four stages an album goes through, from wanted to shelved. */
+export const CHAIN_STAGES = ['wanted', 'found', 'received', 'shelved'] as const
 
 export type StageTone = 'off' | 'lit' | 'active' | 'attention' | 'done' | 'error'
+export type BadgeTone = 'signal' | 'success' | 'warning' | 'danger' | 'quiet'
 
 export interface AlbumStatusInfo {
   label: string
-  badge: 'signal' | 'success' | 'warning' | 'danger' | 'quiet'
-  /** Étape atteinte (-1 = hors chaîne) */
+  badge: BadgeTone
+  /** Stage reached (-1 = outside the chain) */
   stage: number
   tone: StageTone
   hint: string
 }
 
-export const ALBUM_STATUS: Record<AlbumStatus, AlbumStatusInfo> = {
-  ignored: { label: 'Non suivi', badge: 'quiet', stage: -1, tone: 'off', hint: 'Soulsick ne cherche pas cet album.' },
-  wanted: { label: 'Recherché', badge: 'quiet', stage: 0, tone: 'lit', hint: 'En attente de la prochaine chasse.' },
-  searching: { label: 'Recherche…', badge: 'signal', stage: 0, tone: 'active', hint: 'Requêtes en cours sur le réseau.' },
-  pending_approval: { label: 'À valider', badge: 'warning', stage: 1, tone: 'attention', hint: 'Des candidats attendent ton choix.' },
-  downloading: { label: 'Téléchargement', badge: 'signal', stage: 2, tone: 'active', hint: 'Fichiers en cours de réception.' },
-  importing: { label: 'Import…', badge: 'signal', stage: 3, tone: 'active', hint: 'Tags, renommage et rangement.' },
-  needs_review: { label: 'À vérifier', badge: 'warning', stage: 3, tone: 'attention', hint: 'Association fichiers ↔ pistes incertaine.' },
-  imported: { label: 'Dans la bibliothèque', badge: 'success', stage: 3, tone: 'done', hint: 'Présent dans /music.' },
-  failed: { label: 'Échec', badge: 'danger', stage: 0, tone: 'error', hint: 'Le dernier essai a échoué.' },
+const ALBUM_META: Record<AlbumStatus, { badge: BadgeTone, stage: number, tone: StageTone }> = {
+  ignored: { badge: 'quiet', stage: -1, tone: 'off' },
+  wanted: { badge: 'quiet', stage: 0, tone: 'lit' },
+  searching: { badge: 'signal', stage: 0, tone: 'active' },
+  pending_approval: { badge: 'warning', stage: 1, tone: 'attention' },
+  downloading: { badge: 'signal', stage: 2, tone: 'active' },
+  importing: { badge: 'signal', stage: 3, tone: 'active' },
+  needs_review: { badge: 'warning', stage: 3, tone: 'attention' },
+  imported: { badge: 'success', stage: 3, tone: 'done' },
+  failed: { badge: 'danger', stage: 0, tone: 'error' },
 }
 
-export const TRANSFER_STATE: Record<TransferStateName, { label: string, badge: AlbumStatusInfo['badge'] }> = {
-  queued: { label: 'En file', badge: 'quiet' },
-  initializing: { label: 'Connexion', badge: 'signal' },
-  transferring: { label: 'En cours', badge: 'signal' },
-  paused: { label: 'En pause', badge: 'quiet' },
-  complete: { label: 'Terminé', badge: 'success' },
-  failed: { label: 'Échec', badge: 'danger' },
-  aborted: { label: 'Annulé', badge: 'quiet' },
+export function albumStatus(s: AlbumStatus): AlbumStatusInfo {
+  return { ...ALBUM_META[s], label: t(`albumStatus.${s}.label`), hint: t(`albumStatus.${s}.hint`) }
+}
+
+const TRANSFER_BADGE: Record<TransferStateName, BadgeTone> = {
+  queued: 'quiet',
+  initializing: 'signal',
+  transferring: 'signal',
+  paused: 'quiet',
+  complete: 'success',
+  failed: 'danger',
+  aborted: 'quiet',
+}
+
+export function transferState(s: TransferStateName): { label: string, badge: BadgeTone } {
+  return { label: t(`transferState.${s}`), badge: TRANSFER_BADGE[s] }
 }
 
 export const FORMAT_LABELS: Record<string, string> = {
@@ -54,40 +64,19 @@ export const FORMAT_LABELS: Record<string, string> = {
 
 export const LOSSLESS = new Set(['flac-24', 'flac', 'alac', 'wav'])
 
-export const RELEASE_TYPES: Record<string, string> = {
-  album: 'Albums',
-  ep: 'EP',
-  single: 'Singles',
-  broadcast: 'Diffusions',
-  other: 'Autres',
+export const RELEASE_TYPES = ['album', 'ep', 'single', 'broadcast', 'other'] as const
+export const SECONDARY_TYPES = ['compilation', 'live', 'remix', 'soundtrack', 'demo', 'mixtape/street', 'dj-mix', 'interview', 'spokenword'] as const
+
+/** Label of a MusicBrainz primary or secondary release type. */
+export function releaseTypeLabel(key: string): string {
+  const k = `releaseType.${key}`
+  return te(k) ? t(k) : key
 }
 
-export const SECONDARY_TYPES: Record<string, string> = {
-  'compilation': 'Compilations',
-  'live': 'Live',
-  'remix': 'Remix',
-  'soundtrack': 'BO',
-  'demo': 'Démos',
-  'mixtape/street': 'Mixtapes',
-  'dj-mix': 'DJ mix',
-  'interview': 'Interviews',
-  'spokenword': 'Texte lu',
-}
+/** Journal event families, for filters and labels. */
+export const EVENT_FAMILIES = ['hunt', 'search', 'download', 'import', 'upload', 'library', 'artist', 'album', 'musicbrainz', 'share', 'transfer', 'chat', 'slsk', 'settings', 'auth'] as const
 
-/** Familles d'événements du journal, pour les filtres et les pictos. */
-export const EVENT_FAMILIES: Record<string, string> = {
-  hunt: 'Chasse',
-  search: 'Recherches',
-  download: 'Téléchargements',
-  upload: 'Partage',
-  import: 'Import',
-  library: 'Bibliothèque',
-  artist: 'Artistes',
-  album: 'Albums',
-  musicbrainz: 'MusicBrainz',
-  slsk: 'Réseau',
-  share: 'Partages',
-  shares: 'Partages',
-  settings: 'Réglages',
-  auth: 'Sécurité',
+export function eventFamilyLabel(family: string): string {
+  const k = `eventFamily.${family === 'shares' ? 'share' : family}`
+  return te(k) ? t(k) : family
 }

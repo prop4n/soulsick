@@ -9,10 +9,12 @@ from sqlalchemy import desc, func, select
 
 from ..core import Core
 from ..journal import event_to_dict
+from ..messages import M
 from ..models import AlbumStatus, Artist, Event, LibraryFile, QualityProfile, ReleaseGroup, Transfer
 from ..quality import ALL_FORMATS
 from ..settings_store import AppSettings
 from .deps import get_core, require_user
+from .errors import as_http, http_error
 from .serializers import library_file_dict, profile_dict
 
 router = APIRouter(prefix="/api", tags=["system"], dependencies=[Depends(require_user)])
@@ -44,6 +46,9 @@ async def status(core: Core = Depends(get_core)) -> dict:
         "albums": {k: v for k, v in counts.items()},
         "attention": counts.get(AlbumStatus.PENDING_APPROVAL, 0) + counts.get(AlbumStatus.NEEDS_REVIEW, 0),
         "active_transfers": {"download": active.get("download", 0), "upload": active.get("upload", 0)},
+        "chat_unread": await core.chat.unread_private(),
+        "storage": core.storage.quick_level(),
+        "library_guard": core.guard.state(),
         "paths": {
             "music": str(core.env.music_dir.resolve()),
             "downloads": str(core.env.downloads_dir.resolve()),
@@ -52,7 +57,7 @@ async def status(core: Core = Depends(get_core)) -> dict:
     }
 
 
-# --- Réglages -----------------------------------------------------------------
+# --- Settings -----------------------------------------------------------------
 
 
 def _redact(s: AppSettings) -> dict:
@@ -77,12 +82,14 @@ async def put_settings(body: AppSettings, core: Core = Depends(get_core)) -> dic
     await core.settings.save(body)
     changed = [k for k in ("soulseek", "hunter", "library", "navidrome") if getattr(body, k) != getattr(current, k)]
     await core.journal.emit(
-        "settings.updated", "Réglages modifiés : " + (", ".join(changed) or "aucun changement"), data={"sections": changed}
+        "settings.updated",
+        M("settings.updated", sections=", ".join(changed)) if changed else M("settings.unchanged"),
+        data={"sections": changed},
     )
     if body.soulseek != current.soulseek:
         only_library = body.soulseek.model_copy(update={"share_library": current.soulseek.share_library}) == current.soulseek
         if only_library:
-            # Activer/désactiver le partage de /music ne nécessite pas de reconnexion
+            # Toggling library sharing needs no reconnection
             asyncio.create_task(core.shares.rescan())
         else:
             await core.restart_engine()
@@ -96,9 +103,9 @@ async def test_navidrome(core: Core = Depends(get_core)) -> dict:
 
 @router.post("/hunter/run")
 async def run_hunter(core: Core = Depends(get_core)) -> dict:
-    """Lance tout de suite une chasse sur les albums recherchés (sans attendre l'intervalle)."""
+    """Hunts wanted albums right now (without waiting for the interval)."""
     if not core.engine.logged_in:
-        raise HTTPException(503, "Non connecté au réseau Soulseek")
+        raise http_error(503, "error.engine_offline")
     limit = (await core.settings.get()).hunter.max_searches_per_run
     async with core.db.session() as s:
         n = (
@@ -151,7 +158,7 @@ async def create_profile(body: ProfileIn, core: Core = Depends(get_core)) -> dic
         s.add(p)
         await s.commit()
         await s.refresh(p)
-    await core.journal.emit("profile.created", f"Profil qualité « {p.name} » créé : {' > '.join(p.formats)}")
+    await core.journal.emit("profile.created", M("profile.created", name=p.name, formats=" > ".join(p.formats)))
     return profile_dict(p)
 
 
@@ -160,11 +167,11 @@ async def update_profile(pid: int, body: ProfileIn, core: Core = Depends(get_cor
     async with core.db.session() as s:
         p = await s.get(QualityProfile, pid)
         if not p:
-            raise HTTPException(404)
+            raise http_error(404, "error.profile_not_found")
         for k, v in body.model_dump().items():
             setattr(p, k, v)
         await s.commit()
-    await core.journal.emit("profile.updated", f"Profil qualité « {p.name} » modifié : {' > '.join(p.formats)}")
+    await core.journal.emit("profile.updated", M("profile.updated", name=p.name, formats=" > ".join(p.formats)))
     return profile_dict(p)
 
 
@@ -173,7 +180,7 @@ async def delete_profile(pid: int, core: Core = Depends(get_core)) -> dict:
     async with core.db.session() as s:
         used = (await s.execute(select(func.count()).where(Artist.quality_profile_id == pid))).scalar_one()
         if used:
-            raise HTTPException(409, f"Profil utilisé par {used} artiste(s)")
+            raise http_error(409, "error.profile_in_use", n=used)
         p = await s.get(QualityProfile, pid)
         if p:
             await s.delete(p)
@@ -212,6 +219,57 @@ async def events(
         return [event_to_dict(e) for e in (await s.execute(stmt)).scalars()]
 
 
+# --- Custom themes -----------------------------------------------------------------
+
+_THEME_ID = re.compile(r"^[a-z0-9][a-z0-9-]{1,40}$")
+_FORBIDDEN_CSS = re.compile(r"[;{}<>\\]")
+
+
+def _check_theme_value(v, path: str) -> None:
+    if isinstance(v, dict):
+        if len(v) > 40:
+            raise http_error(400, "error.theme_too_many_keys", path=path)
+        for k, x in v.items():
+            if not isinstance(k, str) or len(k) > 40:
+                raise http_error(400, "error.theme_bad_key", path=path)
+            _check_theme_value(x, f"{path}.{k}")
+    elif isinstance(v, str):
+        # Themes become CSS: nothing that could break out of it
+        if len(v) > 200 or _FORBIDDEN_CSS.search(v):
+            raise http_error(400, "error.theme_bad_value", path=path)
+    elif not isinstance(v, (int, float, bool)):
+        raise http_error(400, "error.theme_bad_type", path=path)
+
+
+@router.get("/themes")
+async def get_themes(core: Core = Depends(get_core)) -> list[dict]:
+    return (await core.settings.get_raw("themes") or {}).get("items", [])
+
+
+@router.put("/themes")
+async def put_themes(themes: list[dict], core: Core = Depends(get_core)) -> list[dict]:
+    if len(themes) > 50:
+        raise http_error(400, "error.theme_limit")
+    ids = set()
+    for t in themes:
+        tid = t.get("id")
+        if not isinstance(tid, str) or not _THEME_ID.match(tid) or tid in ids:
+            raise http_error(400, "error.theme_bad_id", id=repr(tid))
+        if not isinstance(t.get("name"), str) or not t["name"].strip():
+            raise http_error(400, "error.theme_no_name", id=tid)
+        _check_theme_value(t, tid)
+        ids.add(tid)
+    before = {t["id"] for t in await get_themes(core)}
+    await core.settings.set_raw("themes", {"items": themes})
+    added, removed = ids - before, before - ids
+    await core.journal.emit(
+        "settings.themes",
+        M("settings.themes", changes=", ".join([f"+{i}" for i in sorted(added)] + [f"−{i}" for i in sorted(removed)]) or "~"),
+        data={"count": len(themes)},
+    )
+    return themes
+
+
 # --- Console (logs techniques en direct) -----------------------------------------
 
 
@@ -246,7 +304,13 @@ async def activity(core: Core = Depends(get_core)) -> dict:
     }
 
 
-# --- Bibliothèque --------------------------------------------------------------
+@router.get("/storage")
+async def storage(refresh: bool = False, core: Core = Depends(get_core)) -> dict:
+    """Disks holding the library, downloads, configuration and shares: free space and what Soulsick uses."""
+    return await core.storage.snapshot(force=refresh)
+
+
+# --- Library -------------------------------------------------------------------
 
 
 @router.post("/library/scan")
@@ -255,12 +319,69 @@ async def scan_library(core: Core = Depends(get_core)) -> dict:
     return {"ok": True}
 
 
+@router.post("/library/guard/check")
+async def check_library_guard(core: Core = Depends(get_core)) -> dict:
+    """Look at the library folder again now (after fixing a mount, plugging a disk…)."""
+    await core.guard.check()
+    return core.guard.state()
+
+
+@router.post("/library/guard/confirm-empty")
+async def confirm_library_empty(core: Core = Depends(get_core)) -> dict:
+    """The library folder really is empty now: forget the files that were known."""
+    await core.guard.check()
+    if not core.guard.problem or core.guard.problem.key != "library.guard.emptied":
+        raise http_error(400, "error.library_not_empty_case")
+    stats = await core.library.scan(confirm_empty=True)
+    return {**core.guard.state(), "removed": stats.get("removed", 0)}
+
+
+class IdentifyIn(BaseModel):
+    dir: str
+    artist: str | None = None
+    album: str | None = None
+
+
+class ApplyExistingIn(BaseModel):
+    dir: str
+    release_group_mbid: str
+    release_mbid: str
+    follow: bool = False
+
+
+@router.get("/library/existing")
+async def existing_groups(core: Core = Depends(get_core)) -> dict:
+    return {"groups": await core.existing.groups(), "job": core.existing.job}
+
+
+@router.post("/library/existing/identify")
+async def existing_identify(body: IdentifyIn, core: Core = Depends(get_core)) -> dict:
+    try:
+        return await core.existing.identify(body.dir, body.artist, body.album)
+    except ValueError as e:
+        raise as_http(e) from e
+
+
+@router.post("/library/existing/identify-all")
+async def existing_identify_all(core: Core = Depends(get_core)) -> dict:
+    asyncio.create_task(core.existing.identify_all())
+    return {"ok": True}
+
+
+@router.post("/library/existing/apply")
+async def existing_apply(body: ApplyExistingIn, core: Core = Depends(get_core)) -> dict:
+    try:
+        return await core.existing.apply(body.dir, body.release_group_mbid, body.release_mbid, body.follow)
+    except ValueError as e:
+        raise as_http(e) from e
+
+
 @router.get("/library/unmatched")
 async def unmatched(core: Core = Depends(get_core)) -> list[dict]:
     return [library_file_dict(f) for f in await core.library.unmatched_files()]
 
 
-# --- Pochettes -----------------------------------------------------------------
+# --- Covers --------------------------------------------------------------------
 
 
 @router.get("/covers/{kind}/{mbid}")
@@ -269,5 +390,6 @@ async def cover(kind: str, mbid: str, size: int = 500, core: Core = Depends(get_
         raise HTTPException(400)
     path = await core.mb.cover(kind, mbid, size)
     if not path:
-        return Response(status_code=404)
+        # No cover on Cover Art Archive (common for small releases): the browser remembers it for a day
+        return Response(status_code=404, headers={"Cache-Control": "public, max-age=86400"})
     return FileResponse(path, media_type="image/jpeg", headers={"Cache-Control": "public, max-age=604800"})

@@ -11,6 +11,7 @@ import httpx
 if TYPE_CHECKING:
     from ..core import Core
 
+from ..messages import M
 
 class NavidromeService:
     def __init__(self, core: Core) -> None:
@@ -21,7 +22,7 @@ class NavidromeService:
         if not cfg.enabled and not force:
             return {"skipped": True}
         if not cfg.url:
-            return {"ok": False, "error": "URL Navidrome non configurée"}
+            return {"ok": False, "error": M("error.navidrome_not_configured").text}
         salt = secrets.token_hex(6)
         token = hashlib.md5((cfg.password + salt).encode()).hexdigest()
         params = {"u": cfg.username, "t": token, "s": salt, "v": "1.16.1", "c": "soulsick", "f": "json"}
@@ -36,7 +37,7 @@ class NavidromeService:
             ok, err = False, str(e)
         await self.core.journal.emit(
             "navidrome.scan",
-            "Scan Navidrome déclenché" if ok else f"Scan Navidrome impossible : {err}",
+            M("navidrome.scan") if ok else M("navidrome.scan_failed", error=str(err)),
             level="info" if ok else "warning",
             data={"url": cfg.url},
         )

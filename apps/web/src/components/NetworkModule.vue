@@ -1,24 +1,28 @@
 <script setup lang="ts">
+import { ShieldCheckIcon } from '@lucide/vue'
 import { computed } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { speed } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import { useLive } from '@/stores/live'
+import { serverText } from '@/lib/serverText'
 
-/** Module « réseau » de la barre latérale : voyant de connexion + VU-mètre des débits. */
+/** Sidebar network module: connection LED + throughput meter. */
+const { t } = useI18n()
 const live = useLive()
 const e = computed(() => live.engine)
 
 const state = computed(() => {
   const s = e.value
   if (!s)
-    return { label: 'Initialisation', led: 'bg-faint', text: 'text-faint' }
+    return { label: t('network.starting'), led: 'bg-faint', text: 'text-faint' }
   if (s.connected)
-    return { label: 'En ligne', led: 'bg-success', text: 'text-success' }
+    return { label: t('network.online'), led: 'bg-success shadow-[0_0_6px_var(--success)]', text: 'text-success' }
   if (s.connecting)
-    return { label: 'Connexion…', led: 'bg-primary animate-pulse', text: 'text-primary' }
+    return { label: t('network.connecting'), led: 'bg-primary animate-pulse', text: 'text-primary' }
   if (!s.configured)
-    return { label: 'Non configuré', led: 'bg-faint', text: 'text-muted-foreground' }
-  return { label: 'Hors ligne', led: 'bg-destructive', text: 'text-destructive' }
+    return { label: t('network.notConfigured'), led: 'bg-faint', text: 'text-muted-foreground' }
+  return { label: t('network.offline'), led: 'bg-destructive', text: 'text-destructive' }
 })
 
 const W = 168
@@ -55,7 +59,7 @@ function line(key: 'down' | 'up') {
     <dl class="grid grid-cols-2 gap-x-3 gap-y-1 text-[11px]">
       <div class="flex flex-col">
         <dt class="legend !text-[9.5px]">
-          <span class="text-primary">↓</span> Réception
+          <span class="text-primary">↓</span> {{ t('network.down') }}
         </dt>
         <dd class="font-mono text-foreground tnum">
           {{ speed(e?.download_speed) }}
@@ -63,19 +67,23 @@ function line(key: 'down' | 'up') {
       </div>
       <div class="flex flex-col">
         <dt class="legend !text-[9.5px]">
-          ↑ Envoi
+          ↑ {{ t('network.up') }}
         </dt>
         <dd class="font-mono text-foreground tnum">
           {{ speed(e?.upload_speed) }}
         </dd>
       </div>
+      <div v-if="e?.forwarded_port" class="col-span-2 flex items-center justify-between pt-1 text-faint" :title="t('network.vpnHint')">
+        <span class="flex items-center gap-1.5"><ShieldCheckIcon class="size-3 text-success" />{{ t('network.vpn') }}</span>
+        <span class="font-mono tnum text-muted-foreground">{{ t('network.port', { port: e.forwarded_port }) }}</span>
+      </div>
       <div class="col-span-2 flex items-center justify-between pt-1 text-faint">
-        <span>Slots d’envoi</span>
+        <span>{{ t('network.uploadSlots') }}</span>
         <span class="font-mono tnum text-muted-foreground">{{ e ? `${e.upload_slots - e.free_upload_slots}/${e.upload_slots}` : '—' }}</span>
       </div>
     </dl>
     <p v-if="e?.error && !e.connected" class="text-[11px] leading-snug text-destructive/90 text-pretty">
-      {{ e.error }}
+      {{ serverText(e.error, e.error_t) }}
     </p>
   </div>
 </template>

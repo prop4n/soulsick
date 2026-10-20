@@ -3,6 +3,7 @@ import type { PlanItem, Release } from '@/lib/types'
 import { TriangleAlertIcon } from '@lucide/vue'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/vue-query'
 import { computed, ref, watch } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { toast } from 'vue-sonner'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
@@ -15,10 +16,11 @@ import { cn } from '@/lib/utils'
 import FormatTag from './FormatTag.vue'
 
 /**
- * Revue d'import : rien n'est déplacé tant que tu n'as pas validé l'association
- * fichier → piste. Chaque ligne est modifiable.
+ * Import review: nothing moves until the file → track mapping is confirmed.
+ * Every row is editable.
  */
 const props = defineProps<{ candidateId: number, releases: Release[] }>()
+const { t } = useI18n()
 const qc = useQueryClient()
 
 interface PlanResponse {
@@ -54,7 +56,7 @@ const duplicates = computed(() => {
 })
 
 watch(releaseId, (_, before) => {
-  // Changer d'édition : on réassocie par position quand c'est possible
+  // Switching edition: re-map by position when possible
   if (!before || !release.value || !data.value)
     return
   const byPos = new Map(release.value.tracks.map(t => [`${t.disc}-${t.position}`, String(t.id)]))
@@ -71,10 +73,10 @@ const apply = useMutation({
     })),
   }),
   onSuccess: () => {
-    toast.success('Import effectué', { description: 'Fichiers tagués, renommés et rangés.' })
+    toast.success(t('review.done'), { description: t('review.doneHint') })
     qc.invalidateQueries({ queryKey: ['album'] })
   },
-  onError: e => toast.error('Import impossible', { description: e.message }),
+  onError: e => toast.error(t('import.row.failed'), { description: e.message }),
 })
 
 function trackLabel(id: string) {
@@ -89,15 +91,14 @@ function trackLabel(id: string) {
       <div class="flex flex-col gap-1">
         <h2 class="flex items-center gap-2 text-[14px] font-semibold">
           <TriangleAlertIcon class="size-4 text-warning" />
-          Vérifie l’import avant rangement
+          {{ t('review.title') }}
         </h2>
         <p class="max-w-2xl text-[12.5px] text-muted-foreground text-pretty">
-          Les fichiers sont dans le dossier de réception, rien n’a été déplacé. Corrige l’association si besoin :
-          chaque fichier sera tagué avec les infos MusicBrainz de la piste choisie, renommé, puis rangé.
+          {{ t('review.intro') }}
         </p>
       </div>
       <span v-if="data" class="shrink-0 font-mono text-[11.5px] text-muted-foreground tnum">
-        confiance {{ Math.round(data.info.confidence * 100) }} %
+        {{ t('review.confidence', { pct: Math.round(data.info.confidence * 100) }) }}
       </span>
     </div>
 
@@ -107,7 +108,7 @@ function trackLabel(id: string) {
 
     <template v-else-if="data">
       <div class="flex flex-col gap-1.5">
-        <span class="legend">Édition MusicBrainz</span>
+        <span class="legend">{{ t('review.edition') }}</span>
         <Select v-model="releaseId">
           <SelectTrigger class="w-full sm:max-w-xl">
             <SelectValue />
@@ -115,14 +116,14 @@ function trackLabel(id: string) {
           <SelectContent>
             <SelectGroup>
               <SelectItem v-for="r in releases" :key="r.id" :value="String(r.id)">
-                {{ r.title }} · {{ r.date ?? '?' }} · {{ r.country ?? '?' }} · {{ r.formats || '?' }} · {{ r.track_count }} pistes
+                {{ r.title }} · {{ r.date ?? '?' }} · {{ r.country ?? '?' }} · {{ r.formats || '?' }} · {{ t('album.trackCount', r.track_count) }}
               </SelectItem>
             </SelectGroup>
           </SelectContent>
         </Select>
       </div>
 
-      <div class="overflow-hidden rounded-md border bg-card">
+      <div class="overflow-hidden rounded-lg bg-card">
         <div
           v-for="p in data.plan"
           :key="p.file"
@@ -139,12 +140,12 @@ function trackLabel(id: string) {
               size="sm"
               :class="cn('w-full', mapping[p.file] === 'skip' && 'text-faint', duplicates.has(mapping[p.file] ?? '') && 'border-destructive/60')"
             >
-              <SelectValue>{{ mapping[p.file] === 'skip' ? 'Ne pas importer' : trackLabel(mapping[p.file] ?? '') }}</SelectValue>
+              <SelectValue>{{ mapping[p.file] === 'skip' ? t('review.skip') : trackLabel(mapping[p.file] ?? '') }}</SelectValue>
             </SelectTrigger>
             <SelectContent>
               <SelectGroup>
                 <SelectItem value="skip">
-                  Ne pas importer
+                  {{ t('review.skip') }}
                 </SelectItem>
                 <SelectItem v-for="t in release?.tracks ?? []" :key="t.id" :value="String(t.id)">
                   {{ release!.disc_count > 1 ? `${t.disc}-` : '' }}{{ String(t.position).padStart(2, '0') }} · {{ t.title }} ({{ ms(t.length_ms) }})
@@ -157,7 +158,7 @@ function trackLabel(id: string) {
 
       <Alert v-if="missing.length || duplicates.size" variant="default" class="border-warning/30">
         <AlertTitle class="text-[13px]">
-          {{ duplicates.size ? 'Une piste est associée à plusieurs fichiers' : `${missing.length} piste(s) sans fichier` }}
+          {{ duplicates.size ? t('review.duplicate') : t('review.missing', missing.length) }}
         </AlertTitle>
         <AlertDescription v-if="missing.length" class="text-[12px]">
           {{ missing.map(t => t.title).join(', ') }}
@@ -167,7 +168,7 @@ function trackLabel(id: string) {
       <div class="flex justify-end">
         <Button :disabled="apply.isPending.value || duplicates.size > 0 || !releaseId" @click="apply.mutate()">
           <Spinner v-if="apply.isPending.value" data-icon="inline-start" />
-          Importer avec ce plan
+          {{ t('review.apply') }}
         </Button>
       </div>
     </template>

@@ -3,15 +3,19 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 from sqlalchemy import select
 
+from ..messages import M, UserError
 from ..models import Transfer, TransferState, iso_utc
 from ..naming import safe_component
 from ..slsk.engine import TransferUpdate
+
+log = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from ..core import Core
@@ -48,6 +52,11 @@ class TransferService:
         # Progression en mémoire (la base n'est écrite qu'aux changements d'état)
         self._live: dict[int, dict] = {}
         self._ids: dict[tuple[str, str, str], int] = {}
+        # Downloads you cancelled, and downloads already received: final. The engine may still
+        # report on them (a late peer, an aioslsk re-queue); they stay as they are until you
+        # retry or resume them explicitly
+        self._cancelled: set[int] = set()
+        self._done: set[int] = set()
         self._lock = asyncio.Lock()
 
     async def _find_id(self, u: TransferUpdate) -> int | None:
@@ -101,6 +110,15 @@ class TransferService:
                 self._ids[(u.direction, u.username, u.remote_path)] = tid
                 created = True
 
+            if u.direction == "download" and (
+                (tid in self._cancelled and u.state not in TERMINAL) or tid in self._done
+            ):
+                # A late update for a file you cancelled or already received: ignore it, and make
+                # sure the engine doesn't download it again
+                if u.state not in TERMINAL:
+                    asyncio.create_task(self.stop_on_engine(u.username, u.remote_path))
+                return
+
             prev = self._live.get(tid, {})
             live = {
                 "id": tid,
@@ -121,7 +139,7 @@ class TransferService:
             if created and u.direction == "upload":
                 name = u.remote_path.replace("\\", "/").rsplit("/", 1)[-1]
                 await self.core.journal.emit(
-                    "upload.requested", f"{u.username} demande « {name} »",
+                    "upload.requested", M("upload.requested", peer=u.username, name=name),
                     transfer_id=tid, data={"remote_path": u.remote_path, "local_path": u.local_path},
                 )
             self.core.hub.publish("transfer", live)
@@ -149,6 +167,8 @@ class TransferService:
                 t.started_at = datetime.now(UTC)
             if u.state in TERMINAL:
                 t.completed_at = datetime.now(UTC)
+            if u.state == TransferState.COMPLETE and t.direction == "download":
+                self._done.add(tid)
             else:
                 t.completed_at = None
             await s.commit()
@@ -158,7 +178,7 @@ class TransferService:
             return
         await self._journal(data, prev)
         if u.state in TERMINAL and data["candidate_id"]:
-            # Hors du verrou : la suite (import, bascule de candidat) relance des transferts
+            # Outside the lock: what follows (import, fallback) starts transfers again
             asyncio.create_task(self.core.hunter.on_transfer_terminal(data["candidate_id"]))
 
     async def _journal(self, t: dict, prev: str) -> None:
@@ -167,32 +187,35 @@ class TransferService:
         if t["direction"] == "upload":
             if t["state"] == TransferState.TRANSFERRING:
                 await self.core.journal.emit(
-                    "upload.started", f"Envoi de « {name} » à {t['username']}",
+                    "upload.started", M("upload.started", name=name, peer=t["username"]),
                     transfer_id=t["id"], data={"path": t["local_path"] or t["remote_path"]},
                 )
             elif t["state"] == TransferState.COMPLETE:
                 await self.core.journal.emit(
-                    "upload.complete", f"« {name} » envoyé à {t['username']}", transfer_id=t["id"],
+                    "upload.complete", M("upload.complete", name=name, peer=t["username"]), transfer_id=t["id"],
                 )
             elif t["state"] in (TransferState.FAILED, TransferState.ABORTED):
                 await self.core.journal.emit(
-                    "upload.failed", f"Envoi de « {name} » à {t['username']} interrompu ({t['error'] or t['state']})",
+                    "upload.failed", M("upload.failed", name=name, peer=t["username"], error=t["error"] or t["state"]),
                     level="warning", transfer_id=t["id"],
                 )
             return
         if t["state"] == TransferState.COMPLETE:
             await self.core.journal.emit(
-                "download.file_complete", f"Reçu « {name} » de {t['username']} → {t['local_path']}",
+                "download.file_complete", M("download.file_complete", name=name, peer=t["username"], path=t["local_path"]),
                 transfer_id=t["id"], release_group_id=rg, candidate_id=t["candidate_id"],
             )
         elif t["state"] == TransferState.FAILED:
             await self.core.journal.emit(
-                "download.file_failed", f"Échec de « {name} » chez {t['username']} : {t['error'] or 'raison inconnue'}",
+                "download.file_failed",
+                M("download.file_failed", name=name, peer=t["username"], error=t["error"] or M("word.unknown_reason")),
                 level="warning", transfer_id=t["id"], release_group_id=rg, candidate_id=t["candidate_id"],
             )
 
     async def requeue(self, tid: int, reset_attempts: bool = False) -> Transfer | None:
-        """Relance un téléchargement sur SA ligne (même id, même lien candidat/album)."""
+        """Restarts a download on ITS row (same id, same candidate/album link)."""
+        self._cancelled.discard(tid)
+        self._done.discard(tid)
         async with self.core.db.session() as s:
             t = await s.get(Transfer, tid)
             if not t or t.direction != "download":
@@ -212,6 +235,80 @@ class TransferService:
         await self.core.engine.download(t.username, t.remote_path, dest)
         return t
 
+    async def pause(self, tid: int) -> bool:
+        """Met un téléchargement en pause (il garde sa place dans l'album ; rien n'est abandonné)."""
+        async with self.core.db.session() as s:
+            t = await s.get(Transfer, tid)
+            if not t or t.direction != "download" or t.state in TERMINAL or t.state == TransferState.PAUSED:
+                return False
+            username, path = t.username, t.remote_path
+        await self.core.engine.pause(username, path, "download")
+        async with self.core.db.session() as s:
+            t = await s.get(Transfer, tid)
+            assert t
+            t.state = TransferState.PAUSED
+            t.speed = 0
+            await s.commit()
+            data = transfer_to_dict(t)
+        self._live[tid] = {**self._live.get(tid, {}), "state": TransferState.PAUSED, "speed": 0}
+        self.core.hub.publish("transfer", data)
+        return True
+
+    async def resume(self, tid: int) -> bool:
+        """Resumes a paused download where it stopped (the peer restarts at the right byte)."""
+        self._cancelled.discard(tid)
+        self._done.discard(tid)
+        async with self.core.db.session() as s:
+            t = await s.get(Transfer, tid)
+            if not t or t.state != TransferState.PAUSED:
+                return False
+            t.state = TransferState.QUEUED
+            await s.commit()
+            data = transfer_to_dict(t)
+            username, path, local = t.username, t.remote_path, t.local_path
+        self.register("download", username, path, tid)
+        self.core.hub.publish("transfer", data)
+        dest = os.path.dirname(local) if local else os.path.join(str(self.core.env.downloads_dir), "manual")
+        await self.core.engine.download(username, path, dest)
+        return True
+
+    async def load_cancelled(self) -> None:
+        """At start-up: downloads cancelled or received before stay so, whatever the engine reports."""
+        async with self.core.db.session() as s:
+            rows = (await s.execute(select(Transfer.id, Transfer.state).where(
+                Transfer.direction == "download",
+                Transfer.state.in_([TransferState.ABORTED, TransferState.COMPLETE]),
+            ))).all()
+        self._cancelled |= {i for i, st in rows if st == TransferState.ABORTED}
+        self._done |= {i for i, st in rows if st == TransferState.COMPLETE}
+
+    async def cancel(self, tid: int) -> bool:
+        """Cancels a transfer for good, even paused or never accepted by the peer
+        (the engine may not track it any more: the row is closed here)."""
+        async with self.core.db.session() as s:
+            t = await s.get(Transfer, tid)
+            if not t or t.state in TERMINAL:
+                return False
+            username, path, direction = t.username, t.remote_path, t.direction
+        if direction == "download":
+            self._cancelled.add(tid)
+        await self.stop_on_engine(username, path, direction)
+        async with self.core.db.session() as s:
+            t = await s.get(Transfer, tid)
+            assert t
+            if t.state not in TERMINAL:
+                t.state = TransferState.ABORTED
+                t.error = M("reason.cancelled_by_you", n=1).text
+                t.speed = 0
+                t.completed_at = datetime.now(UTC)
+                await s.commit()
+            data = transfer_to_dict(t)
+        self._live.pop(tid, None)
+        self.core.hub.publish("transfer", data)
+        if data["candidate_id"]:
+            asyncio.create_task(self.core.hunter.on_transfer_terminal(data["candidate_id"]))
+        return True
+
     def register(self, direction: str, username: str, remote_path: str, tid: int) -> None:
         """Associe un transfert aioslsk à la ligne créée en base par Soulsick."""
         self._ids[(direction, username, remote_path)] = tid
@@ -219,17 +316,30 @@ class TransferService:
     def live(self, tid: int) -> dict | None:
         return self._live.get(tid)
 
+    def forget(self, tid: int) -> None:
+        """A download cancelled outside this service (an album source dropped): it stays cancelled."""
+        self._live.pop(tid, None)
+        self._cancelled.add(tid)
+
+    async def stop_on_engine(self, username: str, path: str, direction: str = "download") -> None:
+        """Aborts on the engine side and drops it from the engine's list (it won't come back)."""
+        for step in (self.core.engine.abort, self.core.engine.remove):
+            try:
+                await step(username, path, direction)
+            except Exception as e:  # offline, or unknown to the engine
+                log.info("%s %s: %s", step.__name__, path, e)
+
     async def download_manual(self, username: str, files: list[str]) -> list[int]:
-        """Téléchargement manuel (recherche ou parcours) vers downloads/manual/<pair>/<dossier>."""
+        """Manual download (search or browse) to downloads/manual/<peer>/<folder>."""
         ids = []
         root = os.path.join(str(self.core.env.downloads_dir), "manual")
         for path in files:
             parts = path.replace("\\", "/").split("/")
             folder = safe_component(parts[-2]) if len(parts) >= 2 else "_"
-            # Pseudo et dossier viennent du réseau : on les neutralise avant d'en faire un chemin
+            # Username and folder come from the network: neutralise them before building a path
             dest = os.path.join(root, safe_component(username), folder)
             if not os.path.realpath(dest).startswith(os.path.realpath(root) + os.sep):
-                raise ValueError(f"Chemin de destination refusé : {dest}")
+                raise UserError("error.destination_refused", path=dest)
             async with self.core.db.session() as s:
                 t = Transfer(
                     direction="download", username=username, remote_path=path,
@@ -243,8 +353,7 @@ class TransferService:
         folders = sorted({p.replace("\\", "/").rsplit("/", 1)[0] for p in files})
         await self.core.journal.emit(
             "download.manual",
-            f"Téléchargement manuel de {len(files)} fichier(s) depuis {username} vers "
-            f"{os.path.join(root, safe_component(username))}",
+            M("download.manual", n=len(files), peer=username, dest=os.path.join(root, safe_component(username))),
             data={"username": username, "folders": folders, "files": files},
         )
         return ids

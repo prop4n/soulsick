@@ -2,15 +2,24 @@ import { QueryClient, VueQueryPlugin } from '@tanstack/vue-query'
 import { createPinia } from 'pinia'
 import { createApp } from 'vue'
 import App from './App.vue'
+import { i18n } from './i18n'
 import { setUnauthorizedHandler } from './lib/api'
+import { applyTheme, followSystemTheme } from './lib/theme'
 import { router } from './router'
 import { useSession } from './stores/session'
-import '@fontsource-variable/archivo/wdth.css'
-import '@fontsource-variable/martian-mono/wdth.css'
+import { bootTheme } from './stores/theme'
+import '@fontsource/ibm-plex-sans/400.css'
+import '@fontsource/ibm-plex-sans/500.css'
+import '@fontsource/ibm-plex-sans/600.css'
+import '@fontsource/ibm-plex-mono/400.css'
+import '@fontsource/ibm-plex-mono/500.css'
+import '@fontsource/instrument-serif/400.css'
+import '@fontsource/instrument-serif/400-italic.css'
 import './style.css'
 
-const theme = localStorage.getItem('soulsick-theme') ?? 'dark'
-document.documentElement.classList.toggle('dark', theme === 'dark')
+applyTheme()
+followSystemTheme()
+bootTheme()
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -20,6 +29,7 @@ const queryClient = new QueryClient({
 
 const app = createApp(App)
 const pinia = createPinia()
+app.use(i18n)
 app.use(pinia)
 app.use(router)
 app.use(VueQueryPlugin, { queryClient })

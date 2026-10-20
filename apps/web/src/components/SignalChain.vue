@@ -1,12 +1,13 @@
 <script setup lang="ts">
 import type { AlbumStatus } from '@/lib/types'
 import { computed } from 'vue'
+import { useI18n } from 'vue-i18n'
+import { albumStatus, CHAIN_STAGES } from '@/lib/status'
 import { cn } from '@/lib/utils'
-import { ALBUM_STATUS, CHAIN_STAGES } from '@/lib/status'
 
 /**
- * La chaîne : quatre segments façon VU-mètre (Recherché → Trouvé → Reçu → Rangé).
- * Signature de Soulsick : on voit d'un coup d'œil où en est un album.
+ * The chain: four meter-like segments (Wanted → Found → Received → Shelved).
+ * Soulsick's signature: where an album stands, at a glance.
  */
 const props = withDefaults(defineProps<{
   status: AlbumStatus
@@ -14,7 +15,8 @@ const props = withDefaults(defineProps<{
   labels?: boolean
 }>(), { size: 'sm', labels: false })
 
-const info = computed(() => ALBUM_STATUS[props.status])
+const { t } = useI18n()
+const info = computed(() => albumStatus(props.status))
 
 function segmentClass(i: number) {
   const { stage, tone } = info.value
@@ -51,7 +53,7 @@ function labelClass(i: number) {
     :class="cn('inline-flex flex-col', size === 'lg' ? 'gap-2' : 'gap-1')"
     :title="`${info.label} — ${info.hint}`"
     role="img"
-    :aria-label="`Étape : ${info.label}`"
+    :aria-label="t('chain.stage', { label: info.label })"
   >
     <div :class="cn('flex', size === 'lg' ? 'gap-1' : 'gap-[3px]')">
       <span
@@ -71,7 +73,7 @@ function labelClass(i: number) {
         v-for="(stage, i) in CHAIN_STAGES"
         :key="stage"
         :class="cn('legend !tracking-[0.1em]', size === 'lg' ? 'w-16 sm:w-20' : 'w-5', labelClass(i))"
-      >{{ stage }}</span>
+      >{{ t(`chain.${stage}`) }}</span>
     </div>
   </div>
 </template>

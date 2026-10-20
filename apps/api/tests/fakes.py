@@ -63,6 +63,16 @@ class FakeMB(MusicBrainz):
     async def cover(self, kind, mbid, size=500):
         return None
 
+    async def search_release_groups(self, artist, album, limit=5):
+        if "nevermind" not in album.lower():
+            return []
+        return [{"mbid": RG_MBID, "title": "Nevermind", "primary_type": "album", "secondary_types": [],
+                 "first_release_date": "1991-09-24", "artist_mbid": ARTIST_MBID, "artist_name": "Nirvana", "score": 100}]
+
+    async def get_release_group(self, mbid):
+        return {"mbid": mbid, "title": "Nevermind", "primary_type": "album", "secondary_types": [],
+                "first_release_date": "1991-09-24", "artist_mbid": ARTIST_MBID, "artist_name": "Nirvana"}
+
 
 class FakeEngine(SlskEngine):
     def __init__(self, downloads_dir: str) -> None:
@@ -72,6 +82,9 @@ class FakeEngine(SlskEngine):
         self.results: list[PeerResult] = []
         # Scénario par fichier : issue de chaque tentative successive ("complete" | "fail" | "hold")
         self.script: dict[str, list[str]] = {}
+        self.paused: list[str] = []
+        self.sent: list[tuple[str, str, str]] = []
+        self.joined: set[str] = set()
 
     async def start(self, cfg, shares):
         self.config = cfg
@@ -79,6 +92,34 @@ class FakeEngine(SlskEngine):
 
     async def stop(self):
         pass
+
+    async def send_private(self, username, text):
+        self.sent.append(("private", username, text))
+
+    async def peer_profile(self, username, timeout=20):
+        self.profiles_asked = getattr(self, "profiles_asked", 0) + 1
+        return {"username": username, "status": "online", "privileged": False, "reachable": True,
+                "avg_speed": 2_000_000, "shared_files": 1234, "shared_folders": 56, "uploads": 7,
+                "description": "hello", "picture": None, "has_free_slots": True, "upload_slots": 3,
+                "queue_size": 0, "interests": ["jazz"], "hated_interests": [], "country": None}
+
+    async def send_room(self, room, text):
+        from soulsick.slsk.engine import ChatEvent
+        self.sent.append(("room", room, text))
+        # The server echoes room messages back to the sender
+        await self.on_chat(ChatEvent("room", room, self.config.username, text, 0, outgoing=True))
+
+    async def join_room(self, room, timeout=15):
+        self.joined.add(room)
+
+    async def leave_room(self, room):
+        self.joined.discard(room)
+
+    async def room_list(self, timeout=20):
+        return [{"name": "indie", "users": 120, "private": False}]
+
+    def room_users(self, room):
+        return ["alice", "bob"]
 
     async def search(self, query, wait_s):
         return list(self.results)
@@ -115,6 +156,9 @@ class FakeEngine(SlskEngine):
             size=100, bytes_transferred=100 if state == TransferState.COMPLETE else 0, speed=1000.0,
             state=state, place_in_queue=None, error=error, state_changed=True,
         ))
+
+    async def pause(self, username, remote_path, direction="download"):
+        self.paused.append(remote_path)
 
     async def apply_shares(self, shares):
         self.shares = shares

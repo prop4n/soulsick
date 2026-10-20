@@ -4,6 +4,7 @@ import fnmatch
 import os
 from dataclasses import dataclass, field
 
+from ..messages import M, Msg
 from ..quality import AUDIO_EXTENSIONS, extension_of
 
 DEFAULT_SHARE_EXTENSIONS = sorted(AUDIO_EXTENSIONS | {"jpg", "jpeg", "png", "cue", "log"})
@@ -25,20 +26,20 @@ class ShareRules:
         exts = self.allowed_extensions or DEFAULT_SHARE_EXTENSIONS
         return {e.lower().lstrip(".") for e in exts}
 
-    def check(self, relpath: str) -> str | None:
-        """None si le fichier est partagé, sinon la raison de l'exclusion."""
+    def check(self, relpath: str) -> Msg | None:
+        """None when the file is shared, otherwise why it is excluded."""
         rel = relpath.replace("\\", "/")
         name = rel.rsplit("/", 1)[-1]
         if name.startswith("."):
-            return "fichier caché"
+            return M("share.hidden_file")
         for pat in self.exclude_patterns:
             if fnmatch.fnmatch(rel, pat) or fnmatch.fnmatch(name, pat):
-                return f"exclu par le motif « {pat} »"
+                return M("share.excluded_pattern", pattern=pat)
         ext = extension_of(name)
         if ext in BLOCKED_EXTENSIONS or name.endswith(("-wal", "-shm")):
-            return f"extension .{ext} jamais partagée (fichier sensible)"
+            return M("share.blocked_ext", ext=ext)
         if ext not in self.extensions:
-            return f"extension .{ext or '∅'} non autorisée"
+            return M("share.ext_not_allowed", ext=ext or "∅")
         return None
 
 
@@ -52,7 +53,7 @@ class ShareScan:
 
 
 def scan_share(rules: ShareRules, sample_limit: int = 200) -> ShareScan:
-    """Parcourt le dossier et applique les règles (pour l'aperçu dans l'interface)."""
+    """Walks the folder and applies the rules (for the preview in the UI)."""
     out = ShareScan()
     root = rules.path
     for dirpath, dirnames, filenames in os.walk(root):
@@ -72,17 +73,17 @@ def scan_share(rules: ShareRules, sample_limit: int = 200) -> ShareScan:
             else:
                 out.excluded += 1
                 if len(out.excluded_samples) < sample_limit:
-                    out.excluded_samples.append({"path": rel, "reason": reason})
+                    out.excluded_samples.append({"path": rel, "reason": reason.text, "reason_t": reason.to_json()})
     return out
 
 
-def forbidden_share_reason(path: str, protected: list[str]) -> str | None:
-    """Refuse de partager la racine, ou un dossier qui contient (ou est dans) un dossier protégé."""
+def forbidden_share_reason(path: str, protected: list[str]) -> Msg | None:
+    """Refuses to share the root, or a folder that contains (or is inside) a protected folder."""
     real = os.path.realpath(path)
     if real == os.path.sep:
-        return "Impossible de partager la racine du système"
+        return M("share.root_forbidden")
     for p in protected:
         pr = os.path.realpath(p)
         if real == pr or pr.startswith(real + os.sep) or real.startswith(pr + os.sep):
-            return f"Ce dossier contient ou touche {pr} (configuration/réception de Soulsick), il ne peut pas être partagé"
+            return M("share.protected", path=pr)
     return None

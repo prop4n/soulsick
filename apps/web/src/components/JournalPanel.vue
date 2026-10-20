@@ -3,8 +3,8 @@ import type { JournalEvent } from '@/lib/types'
 import { SearchIcon } from '@lucide/vue'
 import { refDebounced } from '@vueuse/core'
 import { computed, ref, watch } from 'vue'
+import { useI18n } from 'vue-i18n'
 import EventFeed from '@/components/EventFeed.vue'
-import PageHeader from '@/components/PageHeader.vue'
 import { Button } from '@/components/ui/button'
 import { InputGroup, InputGroupAddon, InputGroupInput } from '@/components/ui/input-group'
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
@@ -12,9 +12,12 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { useEvents } from '@/composables/queries'
 import { api } from '@/lib/api'
-import { EVENT_FAMILIES } from '@/lib/status'
+import { eventText } from '@/lib/serverText'
+import { EVENT_FAMILIES, eventFamilyLabel } from '@/lib/status'
 import { useLive } from '@/stores/live'
 
+/** The journal: every decision Soulsick made, newest first, append-only. */
+const { t } = useI18n()
 const live = useLive()
 const family = ref('all')
 const level = ref('all')
@@ -38,7 +41,7 @@ watch(params, () => {
 function matches(e: JournalEvent) {
   return (family.value === 'all' || e.kind.startsWith(family.value))
     && (level.value === 'all' || e.level === level.value)
-    && (!dq.value || e.message.toLowerCase().includes(dq.value.toLowerCase()))
+    && (!dq.value || eventText(e).toLowerCase().includes(dq.value.toLowerCase()))
 }
 
 const events = computed(() => {
@@ -64,24 +67,16 @@ async function more() {
   exhausted.value = page.length < 150
   loadingMore.value = false
 }
-
-const families = ['hunt', 'search', 'download', 'import', 'upload', 'library', 'artist', 'album', 'musicbrainz', 'share', 'slsk', 'settings', 'auth']
 </script>
 
 <template>
   <div class="flex flex-col">
-    <PageHeader
-      eyebrow="Système"
-      title="Journal"
-      description="Tout ce que Soulsick a fait et décidé, dans l’ordre, en append-only. Déplie une ligne pour voir les données brutes (requêtes, candidats, chemins)."
-    />
-
     <div class="mb-4 flex flex-col gap-3 lg:flex-row lg:items-center">
       <InputGroup class="lg:max-w-xs">
         <InputGroupAddon>
           <SearchIcon />
         </InputGroupAddon>
-        <InputGroupInput v-model="q" placeholder="Chercher dans les messages…" />
+        <InputGroupInput v-model="q" :placeholder="t('activity.journal.searchPlaceholder')" />
       </InputGroup>
       <Select v-model="family">
         <SelectTrigger class="w-full lg:w-48">
@@ -90,23 +85,23 @@ const families = ['hunt', 'search', 'download', 'import', 'upload', 'library', '
         <SelectContent>
           <SelectGroup>
             <SelectItem value="all">
-              Toutes les familles
+              {{ t('activity.journal.allFamilies') }}
             </SelectItem>
-            <SelectItem v-for="f in families" :key="f" :value="f">
-              {{ EVENT_FAMILIES[f] ?? f }}
+            <SelectItem v-for="f in EVENT_FAMILIES" :key="f" :value="f">
+              {{ eventFamilyLabel(f) }}
             </SelectItem>
           </SelectGroup>
         </SelectContent>
       </Select>
       <ToggleGroup v-model="level" type="single" variant="outline" size="sm" class="justify-start">
         <ToggleGroupItem value="all">
-          Tout
+          {{ t('common.all') }}
         </ToggleGroupItem>
         <ToggleGroupItem value="warning">
-          Avertissements
+          {{ t('common.warnings') }}
         </ToggleGroupItem>
         <ToggleGroupItem value="error">
-          Erreurs
+          {{ t('common.errors') }}
         </ToggleGroupItem>
       </ToggleGroup>
     </div>
@@ -117,11 +112,11 @@ const families = ['hunt', 'search', 'download', 'import', 'upload', 'library', '
     <template v-else>
       <EventFeed :events="events" />
       <p v-if="!events.length" class="py-12 text-center text-[12.5px] text-faint">
-        Aucun événement ne correspond.
+        {{ t('activity.journal.empty') }}
       </p>
       <div v-else-if="!exhausted && events.length >= 150" class="flex justify-center py-6">
         <Button variant="outline" size="sm" :disabled="loadingMore" @click="more">
-          Plus ancien
+          {{ t('activity.journal.older') }}
         </Button>
       </div>
     </template>

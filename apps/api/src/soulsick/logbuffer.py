@@ -14,8 +14,8 @@ from datetime import UTC, datetime
 SOURCES = [
     ("aioslsk", "soulseek"),
     ("soulsick.slsk", "soulseek"),
-    ("soulsick.search", "recherche"),
-    ("soulsick.services.hunter", "chasse"),
+    ("soulsick.search", "search"),
+    ("soulsick.services.hunter", "hunt"),
     ("soulsick.services.importer", "import"),
     ("soulsick.services", "app"),
     ("soulsick.musicbrainz", "musicbrainz"),

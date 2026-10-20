@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING
 from sqlalchemy import delete, select
 
 from ..audiotags import read_meta
+from ..messages import M, set_reason
 from ..models import AlbumStatus, Artist, LibraryFile, QualityProfile, Release, ReleaseGroup, of_artist
 from ..quality import is_audio, is_better_or_equal, worst_format
 
@@ -31,13 +32,30 @@ class LibraryService:
         self._lock = asyncio.Lock()
         self.scanning = False
 
-    async def scan(self) -> dict:
+    async def scan(self, confirm_empty: bool = False) -> dict:
+        """`confirm_empty`: the person confirmed the library folder really is empty now
+        (otherwise an empty folder that used to hold files is taken for an unmounted disk)."""
         async with self._lock:
+            guard = self.core.guard
+            if not await guard.check():
+                emptied = guard.problem is not None and guard.problem.key == "library.guard.emptied"
+                if not (confirm_empty and emptied):
+                    # Never forget the library because its folder is missing or not mounted
+                    await self.core.journal.emit(
+                        "library.scan_skipped", M("library.scan_skipped", problem=guard.problem), level="warning"
+                    )
+                    return {"skipped": True}
             self.scanning = True
             try:
-                return await self._scan()
+                stats = await self._scan()
             finally:
                 self.scanning = False
+        if confirm_empty:
+            await self.core.journal.emit(
+                "library.guard.confirmed_empty", M("library.guard.confirmed_empty", n=stats["removed"]), level="warning"
+            )
+            await guard.check()
+        return stats
 
     async def _scan(self) -> dict:
         root = str(self.core.env.music_dir)
@@ -84,8 +102,7 @@ class LibraryService:
         stats = {"files": len(on_disk), "new_or_changed": len(changed), "removed": len(removed)}
         await self.core.journal.emit(
             "library.scanned",
-            f"Bibliothèque analysée : {len(on_disk)} fichiers audio "
-            f"({len(changed)} nouveaux/modifiés, {len(removed)} disparus)",
+            M("library.scanned", n=len(on_disk), changed=len(changed), removed=len(removed)),
             data=stats,
         )
         return stats
@@ -110,13 +127,13 @@ class LibraryService:
             files = list(
                 (await s.execute(select(LibraryFile).where(LibraryFile.release_group_mbid.in_(mbids)))).scalars()
             )
-            # Fichiers tagués seulement avec l'id de release : on remonte au release group connu
-            rel_map = {
-                r.mbid: r.release_group_id
-                for r in (
-                    await s.execute(select(Release).where(Release.release_group_id.in_([rg.id for rg in rgs])))
-                ).scalars()
-            }
+            # Files tagged only with the release id: map back to the known release group
+            releases = list(
+                (await s.execute(select(Release).where(Release.release_group_id.in_([rg.id for rg in rgs])))).scalars()
+            )
+            rel_map = {r.mbid: r.release_group_id for r in releases}
+            rel_tracks = {r.mbid: r.track_count for r in releases}
+            rel_by_id = {r.id: r for r in releases}
             if rel_map:
                 extra = (
                     await s.execute(
@@ -137,24 +154,37 @@ class LibraryService:
             for rg in rgs:
                 fs = by_rg.get(rg.id, [])
                 if not fs:
+                    rg.present_tracks = rg.total_tracks = None
                     if rg.status == AlbumStatus.IMPORTED:
                         rg.status = AlbumStatus.WANTED if rg.monitored else AlbumStatus.IGNORED
-                        rg.status_reason = "Fichiers absents de la bibliothèque"
+                        set_reason(rg, "status_reason", M("reason.files_missing"))
                         rg.imported_format = None
                         rg.imported_path = None
                     continue
                 fmt = worst_format([f.format for f in fs], [])
                 rg.imported_format = fmt
                 rg.imported_path = os.path.commonpath([os.path.dirname(f.path) for f in fs])
+                # Partial album (e.g. a single track shelved by hand): tracks present vs its edition
+                present = len({f.recording_mbid or f.path for f in fs})
+                totals = [rel_tracks[f.release_mbid] for f in fs if f.release_mbid in rel_tracks]
+                selected = rel_by_id.get(rg.selected_release_id) if rg.selected_release_id else None
+                total = max(totals) if totals else (selected.track_count if selected else None)
+                rg.present_tracks, rg.total_tracks = present, total
+                tolerated = profile.max_missing_tracks if profile else 0
+                partial = bool(total and present < total - tolerated)
                 if rg.status in ACTIVE:
                     continue
                 cutoff = profile.upgrade_until if profile else None
-                if rg.monitored and cutoff and not is_better_or_equal(fmt, cutoff):
+                if partial and rg.monitored:
+                    # Followed album only partly here: the hunt completes it
                     rg.status = AlbumStatus.WANTED
-                    rg.status_reason = f"Présent en {fmt or 'format inconnu'}, recherche d'une meilleure qualité"
+                    set_reason(rg, "status_reason", M("reason.partial", n=present, total=total))
+                elif rg.monitored and cutoff and not is_better_or_equal(fmt, cutoff):
+                    rg.status = AlbumStatus.WANTED
+                    set_reason(rg, "status_reason", M("reason.upgrading", format=fmt or M("word.unknown_format")))
                 else:
                     rg.status = AlbumStatus.IMPORTED
-                    rg.status_reason = None
+                    set_reason(rg, "status_reason", None)
             await s.commit()
 
     async def unmatched_files(self, limit: int = 500) -> list[LibraryFile]:

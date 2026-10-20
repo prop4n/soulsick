@@ -7,6 +7,7 @@
 """
 
 import asyncio
+import base64
 import logging
 import os
 import time
@@ -14,15 +15,31 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 
 from aioslsk.client import SoulSeekClient
-from aioslsk.commands import PeerGetSharesCommand
+from aioslsk.commands import (
+    GetRoomListCommand,
+    GetUserInterestsCommand,
+    GetUserStatsCommand,
+    GetUserStatusCommand,
+    JoinRoomCommand,
+    LeaveRoomCommand,
+    PeerGetSharesCommand,
+    PeerGetUserInfoCommand,
+    PrivateMessageCommand,
+    RoomMessageCommand,
+)
 from aioslsk.events import (
+    PrivateMessageEvent,
+    RoomJoinedEvent,
+    RoomLeftEvent,
+    RoomMessageEvent,
     SearchResultEvent,
     SessionDestroyedEvent,
     SessionInitializedEvent,
     TransferAddedEvent,
     TransferProgressEvent,
 )
-from aioslsk.exceptions import AuthenticationError
+from aioslsk.exceptions import AuthenticationError, ConnectionWriteError, PeerConnectionError
+from aioslsk.protocol.messages import PeerTransferQueue
 from aioslsk.protocol.primitives import AttributeKey, FileData
 from aioslsk.search.model import SearchResult
 from aioslsk.settings import (
@@ -42,10 +59,12 @@ from aioslsk.settings import (
 from aioslsk.settings import ListeningSettings as SlskListening
 from aioslsk.shares.manager import SharesManager
 from aioslsk.shares.model import SharedDirectory
+from aioslsk.transfer.manager import TransferManager, _RequestFlag
 from aioslsk.transfer.model import Transfer as SlskTransfer
 from aioslsk.transfer.model import TransferDirection
 from aioslsk.transfer.state import TransferState as SlskState
 
+from ..messages import M, Msg
 from ..models import TransferState
 from ..naming import safe_component
 from ..scoring import PeerResult, RemoteFile
@@ -56,7 +75,11 @@ log = logging.getLogger(__name__)
 
 
 class EngineUnavailable(Exception):
-    pass
+    """The Soulseek engine can't do it right now (not configured, offline…)."""
+
+    def __init__(self, msg: Msg | str | None = None) -> None:
+        self.msg = msg if isinstance(msg, Msg) else M("raw", text=msg) if msg else M("engine.offline")
+        super().__init__(self.msg.text)
 
 
 _STATE_MAP = {
@@ -142,11 +165,87 @@ class FilteringSharesManager(SharesManager):
             self._cleanup_term_map()
 
 
+class SafeTransferManager(TransferManager):
+    """aioslsk's transfer manager, with one fix.
+
+    When asking a peer to queue a file fails (a connection error, often after the
+    `GetPeerAddress … invalid state` race on several files to the same peer), aioslsk puts
+    the transfer back in the queue WHATEVER its state. If the file arrived meanwhile through
+    another connection, it is COMPLETE and gets downloaded again (as "name (1).flac"…);
+    a PAUSED or ABORTED one restarts on its own. Here it is re-queued only if it was
+    still waiting to be queued.
+    """
+
+    def manage_transfers(self):
+        """aioslsk's cycle, except that a download whose queue request is still running
+        doesn't get a second one (aioslsk starts a new request on every cycle)."""
+        downloads, uploads = self._get_queued_transfers()
+        free_upload_slots = self.get_free_upload_slots()
+        for download in downloads:
+            running = getattr(download, "_remotely_queue_task", None)
+            if running is not None and not running.done():
+                continue
+            download._remotely_queue_task = asyncio.create_task(self._queue_remotely(download))
+            download._remotely_queue_task.add_done_callback(download._remotely_queue_task_complete)
+        for upload in uploads[:free_upload_slots]:
+            upload._transfer_task = asyncio.create_task(self._initialize_upload(upload))
+            upload._transfer_task.add_done_callback(upload._transfer_task_complete)
+
+    # A peer that just failed to answer: its other files wait for the next cycle instead of
+    # each waiting for the same connection timeout
+    PEER_FAILURE_COOLDOWN = 30.0
+
+    def _peer_lock(self, username: str) -> asyncio.Lock:
+        locks = self.__dict__.setdefault("_peer_locks", {})
+        return locks.setdefault(username, asyncio.Lock())
+
+    async def _queue_remotely(self, transfer: SlskTransfer):
+        # One request at a time per peer. Sent all at once, the requests for N files each ask the
+        # server for the peer's address; aioslsk hands every answer to the first request, fails
+        # on the second (`GetPeerAddress … invalid state`) and the N-1 others never get one.
+        # In sequence, the first opens the connection and the next ones reuse it.
+        failures = self.__dict__.setdefault("_peer_failures", {})
+        async with self._peer_lock(transfer.username):
+            recent = time.monotonic() - failures.get(transfer.username, -1e9) < self.PEER_FAILURE_COOLDOWN
+            try:
+                if recent:
+                    raise PeerConnectionError("peer unreachable a moment ago")
+                await self._network.send_peer_messages(transfer.username, PeerTransferQueue.Request(transfer.remote_path))
+            except (ConnectionWriteError, PeerConnectionError) as exc:
+                if not recent:
+                    failures[transfer.username] = time.monotonic()
+                log.debug("failed to queue transfer remotely: %s: %r", transfer, exc)
+                if transfer.state.VALUE == SlskState.QUEUED:
+                    transfer.increase_queue_attempts()
+                    await transfer.state.queue()
+                return
+            failures.pop(transfer.username, None)
+        if transfer.state.VALUE == SlskState.QUEUED:
+            transfer.remotely_queued = True
+            transfer.reset_queue_attempts()
+        self.request_management_cycle(_RequestFlag.TRANSFER_CHANGE)
+
+
 class _Client(SoulSeekClient):
     def create_shares_manager(self, cache, executor_factory=None):
         return FilteringSharesManager(
             self.settings, self.events, self.network, cache=cache, executor_factory=executor_factory
         )
+
+    def create_transfer_manager(self, cache):
+        return SafeTransferManager(self.settings, self.events, self.users, self.shares, self.network, cache=cache)
+
+
+@dataclass
+class ChatEvent:
+    """A chat message seen on the network (private or in a room), or a room membership change."""
+
+    kind: str  # private | room
+    target: str  # the other user (private) or the room name
+    username: str  # author
+    text: str
+    timestamp: float
+    outgoing: bool = False
 
 
 TransferCallback = Callable[[TransferUpdate], Awaitable[None]]
@@ -161,11 +260,17 @@ class SlskEngine:
         self.shares: list[ShareRules] = []
         self.logged_in = False
         self.connecting = False
-        self.error: str | None = None
+        self.error: Msg | None = None
         self.searches: dict[int, LiveSearch] = {}
         self.on_transfer: TransferCallback | None = None
         self.on_status: StatusCallback | None = None
         self.on_info: Callable[[str, str, dict], Awaitable[None]] | None = None
+        self.on_chat: Callable[[ChatEvent], Awaitable[None]] | None = None
+        # Port opened by the VPN (gluetun); overrides the configured one, single port, no UPnP
+        self.forwarded_port: int | None = None
+        self.on_room: Callable[[str, bool], Awaitable[None]] | None = None
+        # Rooms to (re)join after each login
+        self.rooms_wanted: Callable[[], Awaitable[list[str]]] | None = None
         self._reconnect_task: asyncio.Task | None = None
         self._stopping = False
 
@@ -180,8 +285,12 @@ class SlskEngine:
             ),
             network=NetworkSettings(
                 server=ServerSettings(reconnect=ReconnectSettings(auto=True)),
-                listening=SlskListening(port=cfg.listen_port, obfuscated_port=cfg.listen_port + 1),
-                upnp=UpnpSettings(enabled=cfg.upnp),
+                listening=(
+                    SlskListening(port=self.forwarded_port, obfuscated_port=0)
+                    if self.forwarded_port
+                    else SlskListening(port=cfg.listen_port, obfuscated_port=cfg.listen_port + 1)
+                ),
+                upnp=UpnpSettings(enabled=cfg.upnp and not self.forwarded_port),
                 limits=NetworkLimitSettings(
                     upload_speed_kbps=cfg.upload_speed_kbps,
                     download_speed_kbps=cfg.download_speed_kbps,
@@ -203,7 +312,10 @@ class SlskEngine:
             "connected": self.logged_in,
             "connecting": self.connecting,
             "username": self.config.username if self.config else None,
-            "error": self.error,
+            "error": self.error.text if self.error else None,
+            "error_t": self.error.to_json() if self.error else None,
+            "listen_port": self.forwarded_port or (self.config.listen_port if self.config else None),
+            "forwarded_port": self.forwarded_port,
             "download_speed": c.transfers.get_download_speed() if c else 0,
             "upload_speed": c.transfers.get_upload_speed() if c else 0,
             "free_upload_slots": c.transfers.get_free_upload_slots() if c else (self.config.upload_slots if self.config else 0),
@@ -223,7 +335,7 @@ class SlskEngine:
         self.shares = [s for s in shares if os.path.isdir(s.path)]
         self.error = None
         if not (cfg.username and cfg.password):
-            self.error = "Identifiants Soulseek non configurés"
+            self.error = M("engine.not_configured")
             self._publish_status()
             return
         self._reconnect_task = asyncio.create_task(self._connect_loop())
@@ -239,15 +351,15 @@ class SlskEngine:
                 self._publish_status()
                 return
             except AuthenticationError as e:
-                self.error = f"Authentification refusée par le serveur : {e.reason or 'identifiants invalides'}"
+                self.error = M("engine.auth_refused", reason=e.reason or M("engine.invalid_credentials"))
                 self.connecting = False
                 await self._info("slsk.auth_failed", self.error, {})
                 self._publish_status()
                 await self._teardown()
                 return
-            except Exception as e:  # réseau, ports…
-                self.error = f"Connexion impossible : {e!r}"
-                await self._info("slsk.connect_failed", f"{self.error} — nouvel essai dans {delay}s", {})
+            except Exception as e:  # network, ports…
+                self.error = M("engine.connect_failed", error=repr(e))
+                await self._info("slsk.connect_failed", M("slsk.connect_retry", error=self.error, delay=delay), {})
                 await self._teardown()
                 self._publish_status()
                 await asyncio.sleep(delay)
@@ -263,6 +375,10 @@ class SlskEngine:
         client.events.register(SearchResultEvent, self._on_search_result)
         client.events.register(TransferProgressEvent, self._on_progress)
         client.events.register(TransferAddedEvent, self._on_transfer_added)
+        client.events.register(PrivateMessageEvent, self._on_private_message)
+        client.events.register(RoomMessageEvent, self._on_room_message)
+        client.events.register(RoomJoinedEvent, self._on_room_joined)
+        client.events.register(RoomLeftEvent, self._on_room_left)
         await client.start()
         await client.login()
 
@@ -273,7 +389,7 @@ class SlskEngine:
             try:
                 await c.stop()
             except Exception:
-                log.exception("arrêt du client aioslsk")
+                log.exception("stopping the aioslsk client")
 
     async def stop(self) -> None:
         self._stopping = True
@@ -283,32 +399,65 @@ class SlskEngine:
         await self._teardown()
         self.connecting = False
 
-    async def _info(self, kind: str, message: str, data: dict, level: str = "warning") -> None:
+    async def _info(self, kind: str, message: Msg, data: dict, level: str = "warning") -> None:
         if self.on_info:
             await self.on_info(kind, message, {**data, "level": level})
 
     def _require(self) -> _Client:
         if not self.client or not self.logged_in:
-            raise EngineUnavailable(self.error or "Non connecté au réseau Soulseek")
+            raise EngineUnavailable(self.error or M("engine.offline"))
         return self.client
 
-    # --- Événements aioslsk ---------------------------------------------------
+    # --- aioslsk events -------------------------------------------------------
 
     async def _on_session_init(self, event: SessionInitializedEvent) -> None:
         self.logged_in = True
         self.error = None
         await self._info(
             "slsk.connected",
-            f"Connecté au réseau Soulseek en tant que {event.session.user.name}",
+            M("slsk.connected", user=event.session.user.name),
             {"ip": event.session.ip_address, "greeting": event.session.greeting},
             level="info",
         )
         self._publish_status()
+        asyncio.create_task(self._rejoin_rooms())
+
+    async def _rejoin_rooms(self) -> None:
+        if not self.rooms_wanted or not self.client:
+            return
+        for room in await self.rooms_wanted():
+            try:
+                await self.client.execute(JoinRoomCommand(room))
+            except Exception as e:
+                log.info("rejoin %s: %s", room, e)
+
+    # --- Chat events -----------------------------------------------------------
+
+    async def _on_private_message(self, event: PrivateMessageEvent) -> None:
+        m = event.message
+        if self.on_chat:
+            await self.on_chat(ChatEvent("private", m.user.name, m.user.name, m.message, float(m.timestamp)))
+
+    async def _on_room_message(self, event: RoomMessageEvent) -> None:
+        m = event.message
+        me = self.config.username if self.config else None
+        if self.on_chat:
+            await self.on_chat(
+                ChatEvent("room", m.room.name, m.user.name, m.message, float(m.timestamp), outgoing=m.user.name == me)
+            )
+
+    async def _on_room_joined(self, event: RoomJoinedEvent) -> None:
+        if event.user is None and self.on_room:
+            await self.on_room(event.room.name, True)
+
+    async def _on_room_left(self, event: RoomLeftEvent) -> None:
+        if event.user is None and self.on_room:
+            await self.on_room(event.room.name, False)
 
     async def _on_session_destroyed(self, event: SessionDestroyedEvent) -> None:
         self.logged_in = False
         if not self._stopping:
-            await self._info("slsk.disconnected", "Déconnecté du serveur Soulseek (reconnexion automatique)", {})
+            await self._info("slsk.disconnected", M("slsk.disconnected"), {})
         self._publish_status()
 
     async def _on_search_result(self, event: SearchResultEvent) -> None:
@@ -341,10 +490,10 @@ class SlskEngine:
             }
         )
         search_log.info(
-            "« %s » +%.1fs : %s répond — %d fichier(s) dans %d dossier(s)%s, %s, file %d, %d Ko/s",
+            "“%s” +%.1fs: %s answers — %d file(s) in %d folder(s)%s, %s, queue %d, %d KB/s",
             live.query, elapsed, r.username, len(files), folders,
-            f", {len(r.locked_results)} verrouillé(s)" if r.locked_results else "",
-            "slot libre" if r.has_free_slots else "pas de slot", r.queue_size, r.avg_speed // 1024,
+            f", {len(r.locked_results)} locked" if r.locked_results else "",
+            "free slot" if r.has_free_slots else "no free slot", r.queue_size, r.avg_speed // 1024,
         )
 
     async def _on_transfer_added(self, event: TransferAddedEvent) -> None:
@@ -376,26 +525,26 @@ class SlskEngine:
         try:
             await self.on_transfer(upd)
         except Exception:
-            log.exception("callback de transfert")
+            log.exception("transfer callback")
 
-    # --- Recherche ------------------------------------------------------------
+    # --- Search -------------------------------------------------------------
 
     async def start_search(self, query: str) -> LiveSearch:
         c = self._require()
         req = await c.searches.search(query)
         live = LiveSearch(ticket=req.ticket, query=query, started=time.time())
-        search_log.info("Requête « %s » envoyée au serveur (ticket %d) — en attente des réponses des pairs", query, req.ticket)
+        search_log.info("Query “%s” sent to the server (ticket %d) — waiting for peers to answer", query, req.ticket)
         self.searches[req.ticket] = live
-        # Nettoyage des vieilles recherches (on garde les 50 dernières)
+        # Drop old searches (keep the last 50)
         if len(self.searches) > 50:
             for k in sorted(self.searches, key=lambda k: self.searches[k].started)[:-50]:
                 self.searches.pop(k, None)
         return live
 
     async def search(self, query: str, wait_s: float, min_wait_s: float = 8.0, quiet_s: float = 4.0) -> list[PeerResult]:
-        """Écoute les réponses ; s'arrête dès qu'elles se tarissent (≥ min_wait_s, ≤ wait_s).
+        """Listens for answers; stops as soon as they dry up (≥ min_wait_s, ≤ wait_s).
 
-        Les recherches populaires remplissent toute la fenêtre ; les rares n'attendent pas pour rien.
+        Popular searches fill the whole window; rare ones don't wait for nothing.
         """
         live = await self.start_search(query)
         last_count, last_change = 0, time.monotonic()
@@ -406,13 +555,13 @@ class SlskEngine:
                 last_count, last_change = len(live.results), time.monotonic()
             elif elapsed >= min_wait_s and time.monotonic() - last_change >= quiet_s:
                 search_log.info(
-                    "« %s » : plus de nouvelle réponse depuis %.0f s, écoute arrêtée après %.0f s (%d pairs)",
+                    "“%s”: no new answer for %.0f s, stopped listening after %.0f s (%d peers)",
                     query, quiet_s, elapsed, last_count,
                 )
                 break
         return list(live.results)
 
-    # --- Transferts -----------------------------------------------------------
+    # --- Transfers ----------------------------------------------------------
 
     async def download(self, username: str, remote_path: str, dest_dir: str) -> None:
         """Télécharge un fichier distant vers `dest_dir` (le nom de fichier distant est conservé)."""
@@ -439,7 +588,15 @@ class SlskEngine:
             try:
                 await self._require().transfers.abort(t)
             except Exception as e:
-                log.info("abort : %s", e)
+                log.info("abort: %s", e)
+
+    async def pause(self, username: str, remote_path: str, direction: str = "download") -> None:
+        t = self._find(username, remote_path, direction)
+        if t:
+            try:
+                await self._require().transfers.pause(t)
+            except Exception as e:
+                log.info("pause: %s", e)
 
     async def retry(self, username: str, remote_path: str, direction: str = "download") -> bool:
         t = self._find(username, remote_path, direction)
@@ -487,7 +644,90 @@ class SlskEngine:
             ]
         return {"directories": conv(directories), "locked": conv(locked)}
 
-    # --- Partages -------------------------------------------------------------
+    # --- Peer profile ---------------------------------------------------------
+
+    async def user_status(self, username: str) -> str | None:
+        """online / away / offline according to the server (None when it doesn't say)."""
+        try:
+            st = await self._require().execute(GetUserStatusCommand(username), response=True, timeout=10)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            return None
+        return st.status.name.lower()
+
+    async def peer_profile(self, username: str, timeout: float = 20) -> dict:
+        """What the network says about a peer: status and stats (server), description,
+        picture and upload slots (asked to the peer itself), interests. Each part may be missing."""
+        c = self._require()
+
+        async def ask(cmd, t: float):
+            try:
+                return await c.execute(cmd, response=True, timeout=t)
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:  # offline peer, timeout, refused connection…
+                log.debug("peer %s: %s %s", username, type(cmd).__name__, e)
+                return None
+
+        status, stats, info, interests = await asyncio.gather(
+            ask(GetUserStatusCommand(username), 10),
+            ask(GetUserStatsCommand(username), 10),
+            ask(PeerGetUserInfoCommand(username), timeout),
+            ask(GetUserInterestsCommand(username), 10),
+        )
+        out: dict = {"username": username, "status": None, "privileged": None, "reachable": info is not None}
+        if status is not None:
+            out["status"] = status.status.name.lower()
+            out["privileged"] = bool(status.privileged)
+        if stats is not None:
+            out |= {
+                "avg_speed": stats.avg_speed,
+                "uploads": stats.uploads,
+                "shared_files": stats.shared_file_count,
+                "shared_folders": stats.shared_folder_count,
+            }
+        if info is not None:
+            out |= {
+                "description": (info.description or "").strip() or None,
+                "picture": _picture_data_url(info.picture),
+                "has_free_slots": info.has_slots_free,
+                "upload_slots": info.upload_slots,
+                "queue_size": info.queue_length,
+                "upload_permissions": info.upload_permissions.name.lower(),
+            }
+        if interests is not None:
+            liked, hated = interests
+            out["interests"], out["hated_interests"] = sorted(liked), sorted(hated)
+        country = c.users.get_user_object(username).country
+        out["country"] = country or None
+        return out
+
+    # --- Chat -----------------------------------------------------------------
+
+    async def send_private(self, username: str, text: str) -> None:
+        await self._require().execute(PrivateMessageCommand(username, text))
+
+    async def send_room(self, room: str, text: str) -> None:
+        # The server echoes our own room messages back: they arrive through _on_room_message
+        await self._require().execute(RoomMessageCommand(room, text))
+
+    async def join_room(self, room: str, timeout: float = 15) -> None:
+        await self._require().execute(JoinRoomCommand(room), response=True, timeout=timeout)
+
+    async def leave_room(self, room: str) -> None:
+        await self._require().execute(LeaveRoomCommand(room))
+
+    async def room_list(self, timeout: float = 20) -> list[dict]:
+        rooms = await self._require().execute(GetRoomListCommand(), response=True, timeout=timeout)
+        return [{"name": r.name, "users": r.user_count, "private": r.private} for r in rooms]
+
+    def room_users(self, room: str) -> list[str]:
+        c = self._require()
+        r = c.rooms.rooms.get(room)
+        return sorted((u.name for u in r.users), key=str.lower) if r else []
+
+    # --- Shares ---------------------------------------------------------------
 
     async def apply_shares(self, shares: list[ShareRules]) -> None:
         """Met à jour les dossiers partagés à chaud puis relance un scan."""
@@ -509,3 +749,17 @@ class SlskEngine:
 
     def uploads_snapshot(self) -> list[SlskTransfer]:
         return self.client.transfers.get_uploads() if self.client else []
+
+
+def _picture_data_url(data: bytes | None) -> str | None:
+    """A peer's picture, as an inline image (only common formats, at most 1 MB)."""
+    if not data or len(data) > 1_000_000:
+        return None
+    mime = (
+        "image/jpeg" if data[:3] == b"\xff\xd8\xff"
+        else "image/png" if data[:8] == b"\x89PNG\r\n\x1a\n"
+        else "image/gif" if data[:4] == b"GIF8"
+        else "image/webp" if data[:4] == b"RIFF" and data[8:12] == b"WEBP"
+        else None
+    )
+    return f"data:{mime};base64,{base64.b64encode(data).decode()}" if mime else None

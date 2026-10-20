@@ -2,7 +2,7 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any
 
-from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, Integer, String, Text
+from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, Index, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .db import Base
@@ -110,6 +110,10 @@ class ReleaseGroup(Base):
     monitored: Mapped[bool] = mapped_column(Boolean, default=False)
     status: Mapped[str] = mapped_column(String, default=AlbumStatus.IGNORED, index=True)
     status_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status_reason_t: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    # Tracks of this album found in the library / tracks of its edition (None = unknown)
+    present_tracks: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    total_tracks: Mapped[int | None] = mapped_column(Integer, nullable=True)
     selected_release_id: Mapped[int | None] = mapped_column(
         ForeignKey("release.id", use_alter=True, ondelete="SET NULL"), nullable=True
     )
@@ -241,6 +245,7 @@ class Candidate(Base):
     score_detail: Mapped[dict] = mapped_column(JSON, default=dict)
     status: Mapped[str] = mapped_column(String, default=CandidateStatus.PROPOSED, index=True)
     reject_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    reject_reason_t: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     matched_release_id: Mapped[int | None] = mapped_column(
         ForeignKey("release.id", ondelete="SET NULL"), nullable=True
     )
@@ -260,6 +265,8 @@ class Transfer(Base):
     username: Mapped[str] = mapped_column(String)
     remote_path: Mapped[str] = mapped_column(String)
     local_path: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Manual download later identified and shelved in the library: where the file went
+    shelved_path: Mapped[str | None] = mapped_column(String, nullable=True)
     size: Mapped[int | None] = mapped_column(Integer, nullable=True)
     bytes_transferred: Mapped[int] = mapped_column(Integer, default=0)
     speed: Mapped[float] = mapped_column(Float, default=0)
@@ -306,3 +313,18 @@ class Event(Base):
     transfer_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     candidate_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     data: Mapped[dict] = mapped_column(JSON, default=dict)
+
+
+class ChatMessage(Base):
+    """A Soulseek chat message: private (target = the other user) or in a room (target = room name)."""
+
+    __tablename__ = "chat_message"
+    __table_args__ = (Index("ix_chat_conversation", "kind", "target", "id"),)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+    kind: Mapped[str] = mapped_column(String)  # private | room
+    target: Mapped[str] = mapped_column(String)
+    username: Mapped[str] = mapped_column(String)  # author
+    text: Mapped[str] = mapped_column(Text)
+    outgoing: Mapped[bool] = mapped_column(Boolean, default=False)
+    read: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")

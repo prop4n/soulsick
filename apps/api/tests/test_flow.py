@@ -128,7 +128,8 @@ async def test_no_candidate_keeps_wanted_with_reason(ctx):
     await core.hunter.hunt(rid)
     album = (await client.get(f"/api/albums/{rid}")).json()
     assert album["status"] == "wanted"
-    assert "Aucun candidat" in album["status_reason"]
+    assert album["status_reason"].startswith("No valid candidate")
+    assert album["status_reason_t"] == {"key": "reason.no_valid", "params": {"n": 0}}
 
 
 async def test_share_rules_preview(ctx, tmp_path):
@@ -144,5 +145,7 @@ async def test_share_rules_preview(ctx, tmp_path):
     prev = (await client.get(f"/api/shares/{r.json()['id']}/preview")).json()
     assert prev["included"] == 1 and prev["excluded"] == 2
     reasons = {s["path"]: s["reason"] for s in prev["excluded_samples"]}
-    assert "non autorisée" in reasons[os.path.join("a", "y.exe")]
+    assert "not allowed" in reasons[os.path.join("a", "y.exe")]
+    keys = {s["path"]: s["reason_t"]["key"] for s in prev["excluded_samples"]}
+    assert keys[os.path.join("a", "y.exe")] == "share.ext_not_allowed"
     assert "secret*" in reasons[os.path.join("a", "secret.flac")]

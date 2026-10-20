@@ -3,7 +3,7 @@ import { computed } from 'vue'
 import { cn } from '@/lib/utils'
 import { FORMAT_LABELS, LOSSLESS } from '@/lib/status'
 
-/** Format audio, gravé comme une mention sur une tranche de disque. */
+/** Audio format, printed like a label on a record spine. */
 const props = defineProps<{ format: string | null | undefined, class?: string }>()
 const lossless = computed(() => !!props.format && LOSSLESS.has(props.format))
 </script>

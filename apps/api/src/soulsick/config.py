@@ -17,6 +17,12 @@ class Env(BaseSettings):
     port: int = 5030
     # Désactive le moteur Soulseek (tests, dev du front sans réseau)
     disable_engine: bool = False
+    # Behind a VPN with port forwarding (gluetun): file holding the forwarded port. When set,
+    # Soulseek listens on that port (it changes over time) instead of the one in the settings.
+    forwarded_port_file: Path | None = None
+    # The library folder must be mounted from the host (never the container's own disk).
+    # Unset: required when running in a container.
+    require_library_mount: bool | None = None
 
     @property
     def db_path(self) -> Path:

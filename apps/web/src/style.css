@@ -4,15 +4,15 @@
 @custom-variant dark (&:is(.dark *));
 
 /*
- * Soulsick — étiquette de label.
- * Graphite froid et neutre, papier blanc net, un seul accent : bleu Klein, franc, jamais pastel.
- * Les titres sont composés serrés et condensés comme une tranche de pochette.
- * Vert = rangé dans la bibliothèque ; rouge = destructif ; orange = attend une décision.
+ * Soulsick — thème inspiré de Symfonium (Material You).
+ * Noir profond à peine violacé, surfaces tonales, un seul accent : lavande.
+ * Vert menthe = présent dans la bibliothèque ; corail = destructif ; pêche = attend une décision.
  */
 
 @theme inline {
-  --font-sans: "Archivo Variable", ui-sans-serif, system-ui, sans-serif;
-  --font-mono: "Martian Mono Variable", ui-monospace, monospace;
+  --font-sans: "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, monospace;
+  --font-serif: "Instrument Serif", ui-serif, Georgia, serif;
   --font-heading: var(--font-sans);
 
   --color-background: var(--background);
@@ -48,65 +48,76 @@
   --color-sidebar-primary-foreground: var(--primary-foreground);
   --color-sidebar-ring: var(--ring);
 
-  --radius-sm: calc(var(--radius) - 3px);
-  --radius-md: calc(var(--radius) - 1px);
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
   --radius-lg: var(--radius);
-  --radius-xl: calc(var(--radius) + 4px);
+  --radius-xl: calc(var(--radius) + 6px);
 }
 
-/* Clair : papier froid, encre presque noire, bleu Klein saturé */
+/* Clair : surfaces tonales lavande très pâle, encre violet-noir, accent violet Material */
 :root {
-  --radius: 0.3rem;
-  --background: #eceef1;
-  --card: #ffffff;
-  --popover: #ffffff;
-  --well: #e3e6ea;
-  --foreground: #0d0e11;
+  --radius: 0.75rem;
+  --background: oklch(0.975 0.006 300);
+  --card: oklch(0.993 0.003 300);
+  --popover: oklch(0.995 0.003 300);
+  --well: oklch(0.945 0.012 300);
+  --foreground: oklch(0.22 0.025 295);
   --card-foreground: var(--foreground);
   --popover-foreground: var(--foreground);
-  --muted: #e3e6ea;
-  --muted-foreground: #4c525c;
-  --faint: #7d838d;
-  --primary: #1f35ff;
-  --primary-foreground: #ffffff;
-  --secondary: #e3e6ea;
-  --secondary-foreground: var(--foreground);
-  --accent: #dfe2e7;
+  --muted: oklch(0.94 0.012 300);
+  --muted-foreground: oklch(0.47 0.03 295);
+  --faint: oklch(0.62 0.025 295);
+  --primary: oklch(0.52 0.19 290);
+  --primary-foreground: oklch(0.99 0.005 300);
+  --secondary: oklch(0.93 0.025 300);
+  --secondary-foreground: oklch(0.3 0.06 292);
+  --accent: oklch(0.93 0.025 300);
   --accent-foreground: var(--foreground);
-  --destructive: #e0301e;
-  --success: #12924f;
-  --warning: #d46a00;
-  --border: rgb(13 14 17 / 0.1);
-  --border-strong: rgb(13 14 17 / 0.2);
-  --input: rgb(13 14 17 / 0.16);
-  --ring: #1f35ff;
+  --destructive: oklch(0.58 0.2 22);
+  --success: oklch(0.56 0.12 165);
+  --warning: oklch(0.62 0.15 55);
+  --border: oklch(0.3 0.04 295 / 10%);
+  --border-strong: oklch(0.3 0.04 295 / 20%);
+  --input: oklch(0.3 0.04 295 / 15%);
+  --ring: oklch(0.52 0.19 290);
 }
 
-/* Sombre (défaut) : graphite neutre, sans teinte chaude */
+/* Sombre (défaut) : quasi-noir, surfaces qui montent en violet tonal, lavande lumineuse */
 .dark {
-  --background: #0b0c0e;
-  --card: #121417;
-  --popover: #16181c;
-  --well: #08090a;
-  --foreground: #eceef1;
+  --background: oklch(0.145 0.008 295);
+  --card: oklch(0.185 0.014 295);
+  --popover: oklch(0.215 0.018 295);
+  --well: oklch(0.125 0.008 295);
+  --foreground: oklch(0.95 0.01 300);
   --card-foreground: var(--foreground);
   --popover-foreground: var(--foreground);
-  --muted: #1a1d21;
-  --muted-foreground: #a1a7b0;
-  --faint: #6c727c;
-  --primary: #4458ff;
-  --primary-foreground: #ffffff;
-  --secondary: #1a1d21;
-  --secondary-foreground: var(--foreground);
-  --accent: #1c1f24;
+  --muted: oklch(0.23 0.02 295);
+  --muted-foreground: oklch(0.74 0.025 298);
+  --faint: oklch(0.56 0.025 295);
+  --primary: oklch(0.82 0.11 298);
+  --primary-foreground: oklch(0.24 0.08 292);
+  --secondary: oklch(0.26 0.035 295);
+  --secondary-foreground: oklch(0.9 0.04 300);
+  --accent: oklch(0.255 0.03 295);
   --accent-foreground: var(--foreground);
-  --destructive: #ff4d3d;
-  --success: #2fcf78;
-  --warning: #f29d1a;
-  --border: rgb(236 238 241 / 0.08);
-  --border-strong: rgb(236 238 241 / 0.16);
-  --input: rgb(236 238 241 / 0.12);
-  --ring: #6676ff;
+  --destructive: oklch(0.72 0.16 22);
+  --success: oklch(0.8 0.12 165);
+  --warning: oklch(0.82 0.11 60);
+  --border: oklch(0.95 0.03 300 / 8%);
+  --border-strong: oklch(0.95 0.03 300 / 15%);
+  --input: oklch(0.95 0.03 300 / 12%);
+  --ring: oklch(0.82 0.11 298);
+}
+
+/* Accent tiré de la pochette (pages album/artiste) : mêmes rôles, teinte de l'œuvre */
+.cover-accent {
+  --primary: hsl(var(--cover-h) var(--cover-s) 40%);
+  --primary-foreground: hsl(var(--cover-h) 30% 98%);
+  --ring: var(--primary);
+}
+.dark .cover-accent {
+  --primary: hsl(var(--cover-h) var(--cover-s) 74%);
+  --primary-foreground: hsl(var(--cover-h) 45% 14%);
 }
 
 @layer base {
@@ -115,18 +126,14 @@
   }
   html {
     @apply bg-background;
+    font-feature-settings: "ss02" 1;
     -webkit-font-smoothing: antialiased;
   }
   body {
     @apply bg-background text-foreground font-sans;
   }
-  /* Martian Mono est large par nature : on la resserre pour les colonnes de données */
-  .font-mono, code, kbd, pre {
-    font-stretch: 80%;
-  }
   ::selection {
-    background: var(--primary);
-    color: var(--primary-foreground);
+    background: color-mix(in oklab, var(--primary) 35%, transparent);
   }
 }
 
@@ -135,25 +142,9 @@
   .tnum {
     font-variant-numeric: tabular-nums;
   }
-  /* Légende : petites capitales espacées, comme les mentions d'un dos de pochette */
+  /* Légende : petit libellé discret, en casse normale (pas de capitales espacées) */
   .legend {
-    @apply text-[10.5px] font-semibold uppercase tracking-[0.12em] text-faint;
-  }
-  /* Composition « tranche » : grotesque condensée, grasse, serrée */
-  .spine {
-    font-family: var(--font-sans);
-    font-stretch: 68%;
-    font-weight: 800;
-    letter-spacing: -0.02em;
-    line-height: 0.92;
-  }
-  /* Logo : même famille, étirée large, sur un pavé bleu */
-  .wordmark {
-    font-family: var(--font-sans);
-    font-stretch: 125%;
-    font-weight: 900;
-    letter-spacing: -0.01em;
-    text-transform: uppercase;
+    @apply text-[11.5px] font-medium text-faint;
   }
   .scrollbar-thin {
     scrollbar-width: thin;

@@ -1,0 +1,44 @@
+# Soulsick behind ProtonVPN, through gluetun.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.vpn.yml up -d --build
+#
+# - All Soulsick traffic (Soulseek, MusicBrainz…) goes through the VPN; if the VPN drops,
+#   gluetun's firewall blocks everything (no leak of your real IP).
+# - Proton forwards one port (it changes on each reconnection): gluetun writes it to
+#   ./data/gluetun/forwarded_port and Soulsick listens on it by itself.
+# - Fill .env first (see .env.example) and read docs/vpn.md.
+
+services:
+  gluetun:
+    image: qmcgaw/gluetun:v3
+    container_name: gluetun
+    restart: unless-stopped
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    environment:
+      VPN_SERVICE_PROVIDER: protonvpn
+      VPN_TYPE: wireguard
+      WIREGUARD_PRIVATE_KEY: ${PROTON_WIREGUARD_KEY:?set PROTON_WIREGUARD_KEY in .env}
+      SERVER_COUNTRIES: ${PROTON_COUNTRIES:-Switzerland,Netherlands}
+      # Only P2P servers that allow port forwarding
+      PORT_FORWARD_ONLY: "on"
+      VPN_PORT_FORWARDING: "on"
+      VPN_PORT_FORWARDING_STATUS_FILE: /gluetun/forwarded_port
+      TZ: ${TZ:-Europe/Paris}
+    ports:
+      - "5030:5030"        # Soulsick web UI (the Soulseek port is the forwarded one, nothing to publish)
+    volumes:
+      - ./data/gluetun:/gluetun
+
+  soulsick:
+    network_mode: "service:gluetun"
+    ports: !reset []
+    depends_on:
+      gluetun:
+        condition: service_healthy
+    environment:
+      SOULSICK_FORWARDED_PORT_FILE: /gluetun/forwarded_port
+    volumes:
+      - ./data/gluetun:/gluetun:ro

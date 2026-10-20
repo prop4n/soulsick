@@ -1,19 +1,22 @@
 <script setup lang="ts">
 import type { ScoreDetail } from '@/lib/types'
 import { computed } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
+import { speed } from '@/lib/format'
 import { cn } from '@/lib/utils'
 
 /**
- * Score expliqué : trois segments sur 100 (tracklist /50, format /30, pair /20).
- * Chaque segment montre ce qu'il a gagné sur ce qu'il pouvait gagner.
+ * Explained score: three segments out of 100 (tracklist /50, format /30, peer /20).
+ * Each segment shows what it earned out of what it could earn.
  */
 const props = defineProps<{ detail: ScoreDetail, score: number, muted?: boolean }>()
+const { t } = useI18n()
 
 const parts = computed(() => [
-  { key: 'match', label: 'Tracklist', got: props.detail.match?.points ?? 0, max: 50, cls: 'bg-primary' },
-  { key: 'format', label: 'Format', got: props.detail.format?.points ?? 0, max: 30, cls: 'bg-primary/60' },
-  { key: 'peer', label: 'Pair', got: props.detail.peer?.points ?? 0, max: 20, cls: 'bg-muted-foreground/60' },
+  { key: 'match', label: t('score.tracklist'), got: props.detail.match?.points ?? 0, max: 50, cls: 'bg-primary' },
+  { key: 'format', label: t('score.format'), got: props.detail.format?.points ?? 0, max: 30, cls: 'bg-primary/60' },
+  { key: 'peer', label: t('score.peer'), got: props.detail.peer?.points ?? 0, max: 20, cls: 'bg-muted-foreground/60' },
 ])
 </script>
 
@@ -32,24 +35,21 @@ const parts = computed(() => [
         </TooltipTrigger>
         <TooltipContent class="max-w-64">
           <template v-if="p.key === 'match' && detail.match">
-            {{ detail.match.tracks_matched }}/{{ detail.match.tracks_expected }} pistes reconnues,
-            titres à {{ Math.round(detail.match.title_score * 100) }} %<template v-if="detail.match.duration_score != null">
-              , durées à {{ Math.round(detail.match.duration_score * 100) }} %
-            </template>.
-            Édition : {{ detail.match.release }}
+            {{ t('score.matchDetail', { n: detail.match.tracks_matched, total: detail.match.tracks_expected, titles: Math.round(detail.match.title_score * 100) }) }}<template v-if="detail.match.duration_score != null">{{ t('score.durations', { pct: Math.round(detail.match.duration_score * 100) }) }}</template>.
+            {{ t('coverage.edition', { title: detail.match.release }) }}
           </template>
           <template v-else-if="p.key === 'format' && detail.format">
             {{ detail.format.label }}<template v-if="detail.format.rank != null">
-              — rang {{ detail.format.rank + 1 }} dans le profil
+              — {{ t('score.rank', { n: detail.format.rank + 1 }) }}
             </template><template v-else>
-              — refusé par le profil
+              — {{ t('score.refused') }}
             </template><template v-if="detail.format.mixed">
-              , formats mélangés
+              , {{ t('score.mixed') }}
             </template>
           </template>
           <template v-else-if="p.key === 'peer' && detail.peer">
-            {{ detail.peer.free_slot ? 'Slot libre' : 'Pas de slot libre' }}, file de {{ detail.peer.queue_size }},
-            vitesse moyenne {{ Math.round(detail.peer.avg_speed / 1024) }} Ko/s
+            {{ detail.peer.free_slot ? t('peer.freeSlot') : t('peer.noFreeSlot') }}, {{ t('peer.queue', { n: detail.peer.queue_size }) }},
+            {{ t('score.avgSpeed', { speed: speed(detail.peer.avg_speed) }) }}
           </template>
         </TooltipContent>
       </Tooltip>

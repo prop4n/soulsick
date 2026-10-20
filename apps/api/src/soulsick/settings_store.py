@@ -17,7 +17,7 @@ class SoulseekSettings(BaseModel):
     upload_speed_kbps: int = 0
     download_speed_kbps: int = 0
     share_library: bool = True
-    description: str = "Soulsick — client Soulseek self-hosté"
+    description: str = "Soulsick — self-hosted Soulseek client"
 
 
 class HunterSettings(BaseModel):

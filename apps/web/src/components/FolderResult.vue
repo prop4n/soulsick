@@ -2,6 +2,7 @@
 import type { RemoteFile } from '@/lib/types'
 import { ChevronDownIcon, DownloadIcon, FolderIcon } from '@lucide/vue'
 import { computed, ref } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
@@ -9,7 +10,7 @@ import { bytes, duration, speed, splitPath } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import FormatTag from './FormatTag.vue'
 
-/** Un dossier chez un pair (résultat de recherche ou parcours), téléchargeable en tout ou partie. */
+/** A folder on a peer (search result or browse), downloadable in full or in part. */
 const props = defineProps<{
   username: string
   directory: string
@@ -23,6 +24,7 @@ const props = defineProps<{
 }>()
 const emit = defineEmits<{ download: [files: string[]] }>()
 
+const { t } = useI18n()
 const open = ref(props.defaultOpen ?? false)
 const selected = ref<Set<string>>(new Set())
 const audio = computed(() => props.files.filter(f => !f.extra && f.format))
@@ -39,7 +41,7 @@ function toggle(name: string, on: boolean) {
 </script>
 
 <template>
-  <Collapsible v-model:open="open" class="rounded-lg border bg-card">
+  <Collapsible v-model:open="open" class="rounded-xl bg-card">
     <div class="flex flex-col gap-3 p-3.5 sm:flex-row sm:items-center">
       <CollapsibleTrigger class="flex min-w-0 flex-1 items-start gap-3 text-left">
         <FolderIcon class="mt-0.5 size-4 shrink-0 text-faint" :stroke-width="1.75" />
@@ -47,14 +49,16 @@ function toggle(name: string, on: boolean) {
           <span class="truncate font-mono text-[12.5px] text-foreground" :title="directory">{{ splitPath(directory).name || directory }}</span>
           <span class="truncate font-mono text-[11px] text-faint" :title="directory">{{ splitPath(directory).dir }}</span>
           <div class="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11.5px] text-muted-foreground">
-            <span v-if="showPeer" class="font-mono text-foreground/80">{{ username }}</span>
+            <RouterLink v-if="showPeer" :to="{ name: 'peer', params: { username } }" class="font-mono text-foreground/80 hover:text-primary" @click.stop>
+              {{ username }}
+            </RouterLink>
             <span class="flex gap-1">
               <FormatTag v-for="f in fmts" :key="f" :format="f" />
             </span>
-            <span class="tnum">{{ audio.length }} pistes · {{ bytes(size) }}</span>
+            <span class="tnum">{{ t('album.trackCount', audio.length) }} · {{ bytes(size) }}</span>
             <template v-if="hasFreeSlots !== undefined">
-              <span :class="hasFreeSlots ? 'text-success' : 'text-faint'">{{ hasFreeSlots ? 'slot libre' : 'file pleine' }}</span>
-              <span class="tnum">file {{ queueSize }}</span>
+              <span :class="hasFreeSlots ? 'text-success' : 'text-faint'">{{ hasFreeSlots ? t('peer.freeSlot') : t('peer.noFreeSlot') }}</span>
+              <span class="tnum">{{ t('peer.queue', { n: queueSize ?? 0 }) }}</span>
               <span class="tnum">{{ speed(avgSpeed) }}</span>
             </template>
           </div>
@@ -68,11 +72,11 @@ function toggle(name: string, on: boolean) {
           size="sm"
           @click="emit('download', [...selected]); selected = new Set()"
         >
-          {{ selected.size }} fichier(s)
+          {{ t('folder.selected', selected.size) }}
         </Button>
         <Button size="sm" variant="secondary" @click="emit('download', files.map(f => f.filename))">
           <DownloadIcon data-icon="inline-start" />
-          Dossier
+          {{ t('folder.download') }}
         </Button>
       </div>
     </div>
@@ -81,7 +85,7 @@ function toggle(name: string, on: boolean) {
         <li v-for="f in files" :key="f.filename" class="flex items-center gap-3 py-1 text-[12px]">
           <Checkbox
             :model-value="selected.has(f.filename)"
-            :aria-label="`Sélectionner ${splitPath(f.filename).name}`"
+            :aria-label="t('folder.select', { name: splitPath(f.filename).name })"
             @update:model-value="(v) => toggle(f.filename, v === true)"
           />
           <span :class="cn('min-w-0 flex-1 truncate font-mono', f.extra || !f.format ? 'text-faint' : 'text-foreground/90')" :title="f.filename">

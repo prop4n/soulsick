@@ -1,7 +1,10 @@
 import type { QueryClient } from '@tanstack/vue-query'
-import type { EngineStatus, HunterState, JournalEvent, LogLine, Transfer } from '@/lib/types'
+import type { ChatMessage, EngineStatus, HunterState, JournalEvent, LogLine, Transfer } from '@/lib/types'
 import { defineStore } from 'pinia'
 import { reactive, ref, shallowRef } from 'vue'
+import { toast } from 'vue-sonner'
+import { t } from '@/i18n'
+import { router } from '@/router'
 
 type Msg
   = | { type: 'status', data: EngineStatus }
@@ -10,18 +13,28 @@ type Msg
     | { type: 'transfer', data: Partial<Transfer> & { id: number } }
     | { type: 'album', data: { id: number, status: string, status_reason?: string | null } }
     | { type: 'logs', data: LogLine[] }
+    | { type: 'existing', data: { running: boolean, done: number, total: number } }
+    | { type: 'chat', data: ChatMessage }
+    | { type: 'chat_read', data: { kind: string, target: string } }
+    | { type: 'chat_rooms', data: { rooms: string[] } }
+    | { type: 'library_guard', data: unknown }
 
-/** Flux temps réel : statut réseau, chasse en cours, journal, progression des transferts. */
+/** Real-time stream: network status, current hunt, journal, transfer progress. */
 export const useLive = defineStore('live', () => {
   const engine = ref<EngineStatus | null>(null)
   const hunter = ref<HunterState | null>(null)
   const events = shallowRef<JournalEvent[]>([])
-  /** Logs techniques (page Console), 3000 dernières lignes */
+  /** Engine logs (Activity → Live logs), last 3000 lines */
   const logs = shallowRef<LogLine[]>([])
-  const unseen = ref(0)
+  /** Warnings and errors since the Activity page was last opened */
+  const unseenProblems = ref(0)
   const transfers = reactive(new Map<number, Partial<Transfer>>())
   const connected = ref(false)
-  /** Historique court des vitesses pour le VU-mètre de la barre latérale */
+  /** Chat messages received live (the Chat page merges them into the open conversation) */
+  const chat = shallowRef<ChatMessage[]>([])
+  /** Conversation currently on screen: no notification for it */
+  const chatOpen = ref<{ kind: string, target: string } | null>(null)
+  /** Short speed history for the sidebar meter */
   const speedHistory = ref<{ down: number, up: number }[]>([])
 
   let socket: WebSocket | null = null
@@ -34,7 +47,7 @@ export const useLive = defineStore('live', () => {
     keys.forEach(k => pendingKeys.add(k))
     if (invalidateTimer)
       return
-    // Regroupe les invalidations : un import produit des dizaines d'événements d'affilée
+    // Batch invalidations: an import emits dozens of events in a row
     invalidateTimer = setTimeout(() => {
       invalidateTimer = null
       for (const k of pendingKeys)
@@ -54,7 +67,8 @@ export const useLive = defineStore('live', () => {
         break
       case 'event':
         events.value = [msg.data, ...events.value].slice(0, 300)
-        unseen.value++
+        if (msg.data.level !== 'info')
+          unseenProblems.value++
         invalidate('events', 'status')
         if (msg.data.release_group_id)
           invalidate('album', 'albums', 'artist')
@@ -72,6 +86,29 @@ export const useLive = defineStore('live', () => {
       }
       case 'album':
         invalidate('album', 'albums', 'artist', 'artists', 'status')
+        break
+      case 'chat': {
+        const m = msg.data
+        chat.value = [...chat.value, m].slice(-500)
+        invalidate('chat-overview', 'status')
+        const open = chatOpen.value?.kind === m.kind && chatOpen.value.target === m.target
+        if (m.kind === 'private' && !m.outgoing && !open) {
+          toast(t('chat.newMessage', { user: m.username }), {
+            description: m.text.length > 140 ? `${m.text.slice(0, 140)}…` : m.text,
+            action: { label: t('chat.reply'), onClick: () => router.push({ name: 'chat', query: { with: m.target } }) },
+          })
+        }
+        break
+      }
+      case 'chat_read':
+      case 'chat_rooms':
+        invalidate('chat-overview', 'status')
+        break
+      case 'existing':
+        invalidate('existing')
+        break
+      case 'library_guard':
+        invalidate('status', 'storage')
         break
       case 'logs': {
         const last = logs.value.at(-1)?.id ?? 0
@@ -119,5 +156,5 @@ export const useLive = defineStore('live', () => {
       events.value = list
   }
 
-  return { engine, hunter, events, logs, unseen, transfers, connected, speedHistory, connect, disconnect, seedEvents, seedLogs }
+  return { engine, hunter, events, logs, unseenProblems, chat, chatOpen, transfers, connected, speedHistory, connect, disconnect, seedEvents, seedLogs }
 })

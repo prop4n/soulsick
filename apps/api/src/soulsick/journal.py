@@ -1,7 +1,9 @@
-"""Journal append-only + diffusion temps réel.
+"""Append-only journal + real-time broadcast.
 
-Chaque décision ou action de Soulsick passe par `Journal.emit`, qui persiste un
-`Event` et le pousse aux clients WebSocket connectés via le `Hub`.
+Every Soulsick decision or action goes through `Journal.emit`, which stores an
+`Event` and pushes it to connected WebSocket clients through the `Hub`.
+A `Msg` message is stored in English with its key + params under `data["_t"]`
+so the UI can render it in another language.
 """
 
 import asyncio
@@ -9,13 +11,14 @@ import logging
 from typing import Any
 
 from .db import Database
+from .messages import Msg
 from .models import Event, iso_utc
 
 log = logging.getLogger(__name__)
 
 
 class Hub:
-    """Bus de diffusion vers les WebSockets (une file par client)."""
+    """Broadcast bus to WebSockets (one queue per client)."""
 
     def __init__(self) -> None:
         self._clients: set[asyncio.Queue[dict]] = set()
@@ -34,7 +37,7 @@ class Hub:
             try:
                 q.put_nowait(msg)
             except asyncio.QueueFull:
-                # Client trop lent : on le déconnecte plutôt que de bloquer le moteur
+                # Client too slow: drop it rather than block the engine
                 self._clients.discard(q)
 
 
@@ -61,7 +64,7 @@ class Journal:
     async def emit(
         self,
         kind: str,
-        message: str,
+        message: Msg | str,
         *,
         level: str = "info",
         artist_id: int | None = None,
@@ -70,6 +73,9 @@ class Journal:
         candidate_id: int | None = None,
         data: dict | None = None,
     ) -> None:
+        if isinstance(message, Msg):
+            data = {**(data or {}), "_t": message.to_json()}
+            message = message.text
         getattr(log, "warning" if level == "warning" else "error" if level == "error" else "info")(
             "[%s] %s", kind, message
         )

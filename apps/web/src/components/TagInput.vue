@@ -1,11 +1,13 @@
 <script setup lang="ts">
 import { XIcon } from '@lucide/vue'
 import { ref } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { cn } from '@/lib/utils'
 
-/** Liste de valeurs courtes (extensions, motifs) saisies au clavier : Entrée ou virgule pour ajouter. */
+/** Short values (extensions, patterns) typed in: Enter or comma to add. */
 const model = defineModel<string[]>({ required: true })
 const props = defineProps<{ placeholder?: string, mono?: boolean, normalize?: (v: string) => string }>()
+const { t } = useI18n()
 const draft = ref('')
 
 function commit() {
@@ -38,7 +40,7 @@ function onKey(e: KeyboardEvent) {
       :class="cn('inline-flex h-6 items-center gap-1 rounded-[4px] border bg-card pr-1 pl-1.5 text-[12px]', mono && 'font-mono')"
     >
       {{ v }}
-      <button type="button" class="text-faint hover:text-foreground" :aria-label="`Retirer ${v}`" @click="remove(v)">
+      <button type="button" class="text-faint hover:text-foreground" :aria-label="`${t('common.remove')} ${v}`" @click="remove(v)">
         <XIcon class="size-3" />
       </button>
     </span>

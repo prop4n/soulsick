@@ -3,136 +3,135 @@ import type { Component } from 'vue'
 import {
   ActivityIcon,
   ArrowLeftRightIcon,
+  DiscIcon,
   FolderTreeIcon,
-  GaugeIcon,
-  InboxIcon,
+  HardDriveIcon,
+  HouseIcon,
   LogOutIcon,
+  MessagesSquareIcon,
   MenuIcon,
-  MoonIcon,
-  ScrollTextIcon,
   SearchIcon,
   Settings2Icon,
   Share2Icon,
-  SquareTerminalIcon,
-  SunIcon,
   UsersRoundIcon,
 } from '@lucide/vue'
 import { useQueryClient } from '@tanstack/vue-query'
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
-import EventFeed from '@/components/EventFeed.vue'
+import LibraryGuardBanner from '@/components/LibraryGuardBanner.vue'
 import NetworkModule from '@/components/NetworkModule.vue'
 import { Button } from '@/components/ui/button'
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '@/components/ui/sheet'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
-import { useEvents, useStatus } from '@/composables/queries'
+import { useStatus } from '@/composables/queries'
 import { ago } from '@/lib/format'
 import { cn } from '@/lib/utils'
+import { pageTitle } from '@/router'
 import { useLive } from '@/stores/live'
 import { useSession } from '@/stores/session'
+import { useThemes } from '@/stores/theme'
 
-interface NavItem { name: string, label: string, icon: Component, count?: number, tone?: 'warning' | 'signal' }
+interface NavItem { name: string, label: string, icon: Component, count?: number, tone?: 'warning' | 'signal', also?: string[] }
 
+const { t, locale } = useI18n()
 const route = useRoute()
 const router = useRouter()
 const live = useLive()
 const session = useSession()
+const themes = useThemes()
 const qc = useQueryClient()
 const { data: status } = useStatus()
-const { data: recent } = useEvents(ref({ limit: 80 }))
 
-const activityOpen = ref(false)
 const navOpen = ref(false)
-const dark = ref(document.documentElement.classList.contains('dark'))
 
-onMounted(() => live.connect(qc))
+onMounted(() => {
+  live.connect(qc)
+  themes.load().catch(() => {})
+})
 onUnmounted(() => live.disconnect())
+watch(locale, () => (document.title = pageTitle()))
 
-const groups = computed<{ label: string, items: NavItem[] }[]>(() => [
+const attention = computed(() => {
+  const a = status.value?.albums ?? {}
+  return (a.pending_approval ?? 0) + (a.needs_review ?? 0)
+})
+
+const groups = computed<{ label: string | null, items: NavItem[] }[]>(() => [
   {
-    label: 'Bibliothèque',
+    label: null,
+    items: [{ name: 'home', label: t('nav.home'), icon: HouseIcon, count: attention.value, tone: 'warning' }],
+  },
+  {
+    label: t('nav.groups.library'),
     items: [
-      { name: 'home', label: 'Console', icon: GaugeIcon },
-      { name: 'artists', label: 'Artistes', icon: UsersRoundIcon },
-      { name: 'queue', label: 'File', icon: InboxIcon, count: status.value?.attention, tone: 'warning' },
+      { name: 'artists', label: t('nav.artists'), icon: UsersRoundIcon, also: ['artist'] },
+      { name: 'library', label: t('nav.albums'), icon: DiscIcon, also: ['album'] },
     ],
   },
   {
-    label: 'Réseau',
+    label: t('nav.groups.soulseek'),
     items: [
-      { name: 'search', label: 'Recherche', icon: SearchIcon },
+      { name: 'search', label: t('nav.search'), icon: SearchIcon },
       {
         name: 'transfers',
-        label: 'Transferts',
+        label: t('nav.transfers'),
         icon: ArrowLeftRightIcon,
         count: (status.value?.active_transfers.download ?? 0) + (status.value?.active_transfers.upload ?? 0),
         tone: 'signal',
       },
-      { name: 'browse', label: 'Parcourir un pair', icon: FolderTreeIcon },
-      { name: 'shares', label: 'Partages', icon: Share2Icon },
+      { name: 'browse', label: t('nav.browse'), icon: FolderTreeIcon },
+      { name: 'chat', label: t('nav.chat'), icon: MessagesSquareIcon, count: status.value?.chat_unread, tone: 'signal' },
+      { name: 'shares', label: t('nav.shares'), icon: Share2Icon },
     ],
   },
   {
-    label: 'Système',
+    label: t('nav.groups.system'),
     items: [
-      { name: 'journal', label: 'Journal', icon: ScrollTextIcon },
-      { name: 'logs', label: 'Logs en direct', icon: SquareTerminalIcon },
-      { name: 'settings', label: 'Réglages', icon: Settings2Icon },
+      { name: 'activity', label: t('nav.activity'), icon: ActivityIcon, count: live.unseenProblems, tone: 'warning' },
+      { name: 'settings', label: t('nav.settings'), icon: Settings2Icon },
     ],
   },
 ])
 
-function isActive(name: string) {
+function isActive(item: NavItem) {
   const r = route.name as string
-  if (name === 'artists')
-    return r === 'artists' || r === 'artist' || r === 'album'
-  return r === name
+  return r === item.name || !!item.also?.includes(r)
 }
-
-const events = computed(() => {
-  const seen = new Set(live.events.map(e => e.id))
-  return [...live.events, ...(recent.value ?? []).filter(e => !seen.has(e.id))].slice(0, 120)
-})
 
 const hunterLine = computed(() => {
   const h = live.hunter ?? status.value?.hunter
   if (!h)
     return null
   if (h.current)
-    return { active: true, text: h.current.step === 'search' ? `« ${h.current.query} »` : h.current.label }
-  return { active: false, text: h.next_run_at ? `Prochaine chasse ${ago(h.next_run_at)}` : 'Chasse en pause' }
+    return { active: true, text: h.current.step === 'search' ? t('common.quoted', { text: h.current.query }) : h.current.label }
+  return { active: false, text: h.next_run_at ? t('shell.nextHunt', { when: ago(h.next_run_at) }) : t('shell.huntPaused') }
 })
-
-function toggleTheme() {
-  dark.value = !dark.value
-  document.documentElement.classList.toggle('dark', dark.value)
-  localStorage.setItem('soulsick-theme', dark.value ? 'dark' : 'light')
-}
 
 async function logout() {
   live.disconnect()
   await session.logout()
   router.push({ name: 'login' })
 }
-
-function openActivity() {
-  activityOpen.value = true
-  live.unseen = 0
-}
 </script>
 
 <template>
   <div class="flex min-h-svh bg-background">
-    <!-- Barre latérale : même fond que le contenu, séparée par un filet -->
+    <a
+      href="#content"
+      class="sr-only z-50 rounded-lg bg-primary px-3 py-2 text-[13px] text-primary-foreground focus:not-sr-only focus:fixed focus:top-3 focus:left-3"
+    >{{ t('shell.skip') }}</a>
+    <!-- Sidebar: same background as the content, separated by a hairline -->
     <aside class="sticky top-0 hidden h-svh w-[240px] shrink-0 flex-col border-r lg:flex">
       <div class="flex h-14 items-center gap-2 px-5">
-        <RouterLink :to="{ name: 'home' }" class="wordmark rounded-[3px] bg-primary px-2 py-1 text-[13px] leading-none text-primary-foreground">
-          soulsick
+        <RouterLink :to="{ name: 'home' }" class="group flex items-baseline gap-1.5">
+          <span class="font-serif text-[23px] leading-none italic tracking-tight text-foreground">soulsick</span>
+          <span class="size-1.5 rounded-full bg-primary transition-shadow group-hover:shadow-[0_0_8px_var(--primary)]" />
         </RouterLink>
       </div>
       <nav class="scrollbar-thin flex flex-1 flex-col gap-5 overflow-y-auto px-3 pt-2 pb-4">
-        <div v-for="g in groups" :key="g.label" class="flex flex-col gap-0.5">
-          <p class="legend px-2 pb-1.5">
+        <div v-for="(g, gi) in groups" :key="gi" class="flex flex-col gap-0.5">
+          <p v-if="g.label" class="legend px-2 pb-1.5">
             {{ g.label }}
           </p>
           <RouterLink
@@ -141,16 +140,20 @@ function openActivity() {
             :to="{ name: item.name }"
             :class="cn(
               'group relative flex h-8 items-center gap-2.5 rounded-md px-2 text-[13px] transition-colors',
-              isActive(item.name) ? 'bg-foreground font-medium text-background' : 'text-muted-foreground hover:bg-accent hover:text-foreground',
+              isActive(item) ? 'bg-accent text-foreground' : 'text-muted-foreground hover:bg-accent/60 hover:text-foreground',
             )"
           >
+            <span
+              v-if="isActive(item)"
+              class="absolute top-1.5 bottom-1.5 left-0 w-[2px] rounded-full bg-primary"
+            />
             <component :is="item.icon" class="size-[15px] shrink-0" :stroke-width="1.75" />
             <span class="flex-1 truncate">{{ item.label }}</span>
             <span
               v-if="item.count"
               :class="cn(
                 'min-w-5 rounded-[4px] px-1 text-center font-mono text-[10.5px] leading-[18px] tnum',
-                item.tone === 'warning' ? 'bg-warning text-black' : 'bg-primary text-primary-foreground',
+                item.tone === 'warning' ? 'bg-warning/15 text-warning' : 'bg-primary/12 text-primary',
               )"
             >{{ item.count }}</span>
           </RouterLink>
@@ -161,101 +164,68 @@ function openActivity() {
           <span :class="cn('size-1.5 shrink-0 rounded-full', hunterLine.active ? 'animate-pulse bg-primary' : 'bg-faint')" />
           <span :class="cn('truncate', hunterLine.active ? 'text-primary' : 'text-faint')">{{ hunterLine.text }}</span>
         </div>
+        <RouterLink
+          v-if="status && status.storage !== 'ok'"
+          :to="{ name: 'settings', query: { tab: 'library' } }"
+          :class="cn('flex items-center gap-2 rounded-md px-2 py-1.5 text-[11.5px]',
+                     status.storage === 'critical' ? 'bg-destructive/10 text-destructive' : 'bg-warning/10 text-warning')"
+        >
+          <HardDriveIcon class="size-3.5 shrink-0" />
+          {{ t(`storage.sidebar.${status.storage}`) }}
+        </RouterLink>
         <NetworkModule />
+        <div class="flex items-center justify-between gap-2 px-1">
+          <span class="truncate text-[11.5px] text-faint">{{ session.state?.username }}</span>
+          <Tooltip>
+            <TooltipTrigger as-child>
+              <Button variant="ghost" size="icon-xs" class="text-faint hover:text-foreground" :aria-label="t('shell.logout')" @click="logout">
+                <LogOutIcon />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>{{ t('shell.logout') }}</TooltipContent>
+          </Tooltip>
+        </div>
       </div>
     </aside>
 
-    <div class="flex min-w-0 flex-1 flex-col">
-      <header class="sticky top-0 z-20 flex h-14 items-center gap-2 border-b bg-background/85 px-4 backdrop-blur-md sm:px-6">
-        <Button variant="ghost" size="icon-sm" class="lg:hidden" aria-label="Menu" @click="navOpen = true">
+    <!-- overflow-x-clip: cover halos bleed without creating horizontal scroll -->
+    <div class="flex min-w-0 flex-1 flex-col overflow-x-clip">
+      <header class="sticky top-0 z-20 flex h-14 items-center gap-2 border-b bg-background/85 px-4 backdrop-blur-md lg:hidden">
+        <Button variant="ghost" size="icon-sm" :aria-label="t('shell.menu')" @click="navOpen = true">
           <MenuIcon />
         </Button>
-        <span class="wordmark rounded-[3px] bg-primary px-1.5 py-1 text-[12px] leading-none text-primary-foreground lg:hidden">soulsick</span>
-        <div class="flex-1" />
-        <Tooltip>
-          <TooltipTrigger as-child>
-            <Button variant="ghost" size="sm" class="relative gap-2 text-muted-foreground" @click="openActivity">
-              <ActivityIcon data-icon="inline-start" />
-              <span class="hidden sm:inline">Activité</span>
-              <span
-                v-if="live.unseen"
-                class="rounded-[3px] bg-primary px-1 font-mono text-[10.5px] leading-[16px] text-primary-foreground tnum"
-              >{{ live.unseen > 99 ? '99+' : live.unseen }}</span>
-            </Button>
-          </TooltipTrigger>
-          <TooltipContent>Tout ce que Soulsick fait, en direct</TooltipContent>
-        </Tooltip>
-        <Tooltip>
-          <TooltipTrigger as-child>
-            <Button variant="ghost" size="icon-sm" class="text-muted-foreground" aria-label="Changer de thème" @click="toggleTheme">
-              <SunIcon v-if="dark" />
-              <MoonIcon v-else />
-            </Button>
-          </TooltipTrigger>
-          <TooltipContent>{{ dark ? 'Thème clair' : 'Thème sombre' }}</TooltipContent>
-        </Tooltip>
-        <Tooltip>
-          <TooltipTrigger as-child>
-            <Button variant="ghost" size="icon-sm" class="text-muted-foreground" aria-label="Se déconnecter" @click="logout">
-              <LogOutIcon />
-            </Button>
-          </TooltipTrigger>
-          <TooltipContent>Se déconnecter ({{ session.state?.username }})</TooltipContent>
-        </Tooltip>
+        <span class="font-serif text-[20px] italic">soulsick</span>
       </header>
 
-      <main class="mx-auto w-full max-w-[1320px] flex-1 px-4 py-7 sm:px-8">
+      <main id="content" tabindex="-1" class="mx-auto w-full max-w-[1320px] flex-1 px-4 py-7 outline-none sm:px-8">
+        <LibraryGuardBanner v-if="status?.library_guard && !status.library_guard.ok" :guard="status.library_guard" />
         <RouterView v-slot="{ Component: page }">
-          <component :is="page" :key="route.fullPath" />
+          <component :is="page" :key="route.path" />
         </RouterView>
       </main>
     </div>
 
-    <!-- Activité en direct -->
-    <Sheet v-model:open="activityOpen">
-      <SheetContent class="flex w-full flex-col gap-0 p-0 sm:max-w-md">
-        <SheetHeader class="border-b px-5 py-4">
-          <SheetTitle class="text-[15px]">
-            Activité
-          </SheetTitle>
-          <SheetDescription class="text-[12.5px]">
-            Chaque recherche, décision, transfert et déplacement de fichier.
-          </SheetDescription>
-        </SheetHeader>
-        <div class="scrollbar-thin flex-1 overflow-y-auto px-5 pb-6">
-          <EventFeed :events="events" compact />
-        </div>
-        <div class="border-t px-5 py-3">
-          <Button variant="outline" size="sm" class="w-full" as-child @click="activityOpen = false">
-            <RouterLink :to="{ name: 'journal' }">
-              Ouvrir le journal complet
-            </RouterLink>
-          </Button>
-        </div>
-      </SheetContent>
-    </Sheet>
-
-    <!-- Navigation mobile -->
+    <!-- Mobile navigation -->
     <Sheet v-model:open="navOpen">
       <SheetContent side="left" class="w-[260px] gap-0 p-0">
         <SheetHeader class="px-5 py-4">
-          <SheetTitle class="w-fit">
-            <span class="wordmark rounded-[3px] bg-primary px-2 py-1 text-[13px] leading-none text-primary-foreground">soulsick</span>
+          <SheetTitle class="font-serif text-[22px] font-normal italic">
+            soulsick
           </SheetTitle>
           <SheetDescription class="sr-only">
-            Navigation
+            {{ t('shell.navigation') }}
           </SheetDescription>
         </SheetHeader>
         <nav class="flex flex-col gap-4 px-3 pb-4">
-          <div v-for="g in groups" :key="g.label" class="flex flex-col gap-0.5">
-            <p class="legend px-2 pb-1">
+          <div v-for="(g, gi) in groups" :key="gi" class="flex flex-col gap-0.5">
+            <p v-if="g.label" class="legend px-2 pb-1">
               {{ g.label }}
             </p>
             <RouterLink
               v-for="item in g.items"
               :key="item.name"
               :to="{ name: item.name }"
-              :class="cn('flex h-9 items-center gap-2.5 rounded-md px-2 text-[13.5px]', isActive(item.name) ? 'bg-foreground font-medium text-background' : 'text-muted-foreground')"
+              :class="cn('flex h-9 items-center gap-2.5 rounded-md px-2 text-[13.5px]', isActive(item) ? 'bg-accent text-foreground' : 'text-muted-foreground')"
               @click="navOpen = false"
             >
               <component :is="item.icon" class="size-4" :stroke-width="1.75" />
@@ -264,8 +234,12 @@ function openActivity() {
             </RouterLink>
           </div>
         </nav>
-        <div class="mt-auto border-t p-3">
+        <div class="mt-auto flex flex-col gap-2 border-t p-3">
           <NetworkModule />
+          <Button variant="ghost" size="sm" class="justify-start text-muted-foreground" @click="logout">
+            <LogOutIcon data-icon="inline-start" />
+            {{ t('shell.logout') }}
+          </Button>
         </div>
       </SheetContent>
     </Sheet>

@@ -2,9 +2,10 @@
 import type { JournalEvent } from '@/lib/types'
 import { computed } from 'vue'
 import { dayLabel } from '@/lib/format'
+import { cn } from '@/lib/utils'
 import EventLine from './EventLine.vue'
 
-/** Journal groupé par jour, du plus récent au plus ancien. */
+/** Journal grouped by day, newest first. */
 const props = withDefaults(defineProps<{ events: JournalEvent[], compact?: boolean, links?: boolean }>(), {
   compact: false,
   links: true,
@@ -26,7 +27,7 @@ const groups = computed(() => {
 <template>
   <div class="flex flex-col">
     <section v-for="g in groups" :key="g.day" class="flex flex-col">
-      <h3 class="legend sticky top-0 z-[1] -mx-1 bg-background/95 px-1 pt-3 pb-1.5 backdrop-blur first-letter:uppercase">
+      <h3 :class="cn('legend px-1 pt-3 pb-1.5 first-letter:uppercase', !compact && 'sticky top-0 z-[1] -mx-1 bg-background/95 backdrop-blur')">
         {{ g.day }}
       </h3>
       <div class="flex flex-col divide-y divide-border/60">
