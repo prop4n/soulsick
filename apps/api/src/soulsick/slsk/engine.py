@@ -273,6 +273,9 @@ class SlskEngine:
         self.rooms_wanted: Callable[[], Awaitable[list[str]]] | None = None
         self._reconnect_task: asyncio.Task | None = None
         self._stopping = False
+        # The VPN port loop and the settings both restart the engine: one at a time, or the
+        # client of an overlapping restart stays logged in next to the new one.
+        self._lifecycle = asyncio.Lock()
 
     # --- Cycle de vie ---------------------------------------------------------
 
@@ -329,7 +332,11 @@ class SlskEngine:
             self.on_status(self.status())
 
     async def start(self, cfg: SoulseekSettings, shares: list[ShareRules]) -> None:
-        await self.stop()
+        async with self._lifecycle:
+            await self._halt()
+            self._begin(cfg, shares)
+
+    def _begin(self, cfg: SoulseekSettings, shares: list[ShareRules]) -> None:
         self._stopping = False
         self.config = cfg
         self.shares = [s for s in shares if os.path.isdir(s.path)]
@@ -392,10 +399,16 @@ class SlskEngine:
                 log.exception("stopping the aioslsk client")
 
     async def stop(self) -> None:
+        async with self._lifecycle:
+            await self._halt()
+
+    async def _halt(self) -> None:
         self._stopping = True
-        if self._reconnect_task:
-            self._reconnect_task.cancel()
-            self._reconnect_task = None
+        task, self._reconnect_task = self._reconnect_task, None
+        if task:
+            task.cancel()
+            # Let it finish: a client it is still connecting must not outlive it
+            await asyncio.wait([task])
         await self._teardown()
         self.connecting = False
 
