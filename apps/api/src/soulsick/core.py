@@ -213,6 +213,8 @@ class Core:
         if self.env.forwarded_port_file:
             self.engine.forwarded_port = self._read_forwarded_port()
         rules = await self.shares.rules()
+        pic = self.env.profile_picture_path
+        self.engine.picture = pic.read_bytes() if pic.is_file() else None
         await self.engine.start(cfg, rules)
         # Restart unfinished downloads (aioslsk keeps no state between runs)
         self._tasks.append(asyncio.create_task(self._resume_downloads()))

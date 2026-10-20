@@ -8,6 +8,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { toast } from 'vue-sonner'
 import PageHeader from '@/components/PageHeader.vue'
 import ProfileEditor from '@/components/ProfileEditor.vue'
+import ProfilePicture from '@/components/ProfilePicture.vue'
 import StoragePanel from '@/components/StoragePanel.vue'
 import ThemeGallery from '@/components/ThemeGallery.vue'
 import { Button } from '@/components/ui/button'
@@ -165,6 +166,10 @@ const removeProfile = useMutation({
                 {{ t('settings.soulseek.description') }}
               </FieldLabel>
               <Input id="sd" v-model="form.soulseek.description" />
+            </Field>
+            <Field>
+              <FieldLabel>{{ t('profilePicture.label') }}</FieldLabel>
+              <ProfilePicture />
             </Field>
           </FieldSet>
           <FieldSeparator />

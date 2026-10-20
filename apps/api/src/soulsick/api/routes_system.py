@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import re
 import time
 
@@ -13,6 +14,7 @@ from ..messages import M
 from ..models import AlbumStatus, Artist, Event, LibraryFile, QualityProfile, ReleaseGroup, Transfer
 from ..quality import ALL_FORMATS
 from ..settings_store import AppSettings
+from ..slsk.engine import PICTURE_MAX_BYTES, picture_mime
 from .deps import get_core, require_user
 from .errors import as_http, http_error
 from .serializers import library_file_dict, profile_dict
@@ -95,6 +97,53 @@ async def put_settings(body: AppSettings, core: Core = Depends(get_core)) -> dic
         else:
             await core.restart_engine()
     return _redact(body)
+
+
+# --- Soulseek profile picture -----------------------------------------------------
+
+
+@router.get("/profile/picture")
+async def get_picture(core: Core = Depends(get_core)) -> Response:
+    path = core.env.profile_picture_path
+    data = path.read_bytes() if path.is_file() else None
+    if not data:
+        raise HTTPException(404)
+    return Response(data, media_type=picture_mime(data) or "application/octet-stream", headers={"Cache-Control": "no-cache"})
+
+
+class PictureIn(BaseModel):
+    # base64, optionally as a data: URL
+    data: str
+
+
+@router.put("/profile/picture")
+async def put_picture(body: PictureIn, core: Core = Depends(get_core)) -> dict:
+    raw = body.data.split(",", 1)[1] if body.data.startswith("data:") else body.data
+    if len(raw) > PICTURE_MAX_BYTES * 4 // 3 + 4:
+        raise http_error(413, "error.picture_too_big")
+    try:
+        data = base64.b64decode(raw, validate=True)
+    except ValueError:
+        raise http_error(400, "error.picture_invalid") from None
+    if len(data) > PICTURE_MAX_BYTES:
+        raise http_error(413, "error.picture_too_big")
+    if not picture_mime(data):
+        raise http_error(400, "error.picture_invalid")
+    path = core.env.profile_picture_path
+    tmp = path.with_suffix(".tmp")
+    tmp.write_bytes(data)
+    tmp.replace(path)
+    core.engine.set_picture(data)
+    await core.journal.emit("profile.picture_updated", M("profile.picture_updated"))
+    return {"ok": True, "size": len(data)}
+
+
+@router.delete("/profile/picture")
+async def delete_picture(core: Core = Depends(get_core)) -> dict:
+    core.env.profile_picture_path.unlink(missing_ok=True)
+    core.engine.set_picture(None)
+    await core.journal.emit("profile.picture_removed", M("profile.picture_removed"))
+    return {"ok": True}
 
 
 @router.post("/settings/navidrome/test")

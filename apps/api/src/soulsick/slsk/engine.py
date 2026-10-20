@@ -276,6 +276,8 @@ class SlskEngine:
         # The VPN port loop and the settings both restart the engine: one at a time, or the
         # client of an overlapping restart stays logged in next to the new one.
         self._lifecycle = asyncio.Lock()
+        # Your profile picture, sent to peers who ask for your user info
+        self.picture: bytes | None = None
 
     # --- Cycle de vie ---------------------------------------------------------
 
@@ -284,7 +286,7 @@ class SlskEngine:
             credentials=CredentialsSettings(
                 username=cfg.username,
                 password=cfg.password,
-                info=UserInfoSettings(description=cfg.description),
+                info=UserInfoSettings(description=cfg.description, picture=self.picture),
             ),
             network=NetworkSettings(
                 server=ServerSettings(reconnect=ReconnectSettings(auto=True)),
@@ -760,19 +762,35 @@ class SlskEngine:
         await mgr.scan()
         self._publish_status()
 
+    def set_picture(self, data: bytes | None) -> None:
+        """Changes your profile picture; peers get the new one from their next request, no reconnection."""
+        self.picture = data
+        if self.client:
+            self.client.settings.credentials.info.picture = data
+
     def uploads_snapshot(self) -> list[SlskTransfer]:
         return self.client.transfers.get_uploads() if self.client else []
 
 
-def _picture_data_url(data: bytes | None) -> str | None:
-    """A peer's picture, as an inline image (only common formats, at most 1 MB)."""
-    if not data or len(data) > 1_000_000:
+PICTURE_MAX_BYTES = 1_000_000
+
+
+def picture_mime(data: bytes | None) -> str | None:
+    """Image type from its first bytes (common formats only), None for anything else."""
+    if not data:
         return None
-    mime = (
+    return (
         "image/jpeg" if data[:3] == b"\xff\xd8\xff"
         else "image/png" if data[:8] == b"\x89PNG\r\n\x1a\n"
         else "image/gif" if data[:4] == b"GIF8"
         else "image/webp" if data[:4] == b"RIFF" and data[8:12] == b"WEBP"
         else None
     )
+
+
+def _picture_data_url(data: bytes | None) -> str | None:
+    """A peer's picture, as an inline image (only common formats, at most 1 MB)."""
+    if not data or len(data) > PICTURE_MAX_BYTES:
+        return None
+    mime = picture_mime(data)
     return f"data:{mime};base64,{base64.b64encode(data).decode()}" if mime else None

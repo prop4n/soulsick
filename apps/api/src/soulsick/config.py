@@ -29,6 +29,11 @@ class Env(BaseSettings):
         return self.config_dir / "soulsick.db"
 
     @property
+    def profile_picture_path(self) -> Path:
+        """Your Soulseek profile picture (shown to peers who open your profile)"""
+        return self.config_dir / "profile_picture"
+
+    @property
     def covers_dir(self) -> Path:
         return self.config_dir / "covers"
 

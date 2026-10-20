@@ -395,6 +395,18 @@ const fr: Messages = {
     },
   },
 
+  profilePicture: {
+    label: 'Photo de profil',
+    alt: 'Ta photo de profil Soulseek',
+    add: 'Ajouter une photo',
+    change: 'Changer',
+    remove: 'Retirer',
+    hint: 'Visible par les pairs qui ouvrent ton profil. Réduite à 512 px ; appliquée tout de suite, sans enregistrer.',
+    changed: 'Photo de profil changée',
+    removed: 'Photo de profil retirée',
+    unreadable: 'Image illisible',
+  },
+
   switchPeer: {
     button: 'Changer de pair',
     buttonPeer: 'Remplacer {peer}',

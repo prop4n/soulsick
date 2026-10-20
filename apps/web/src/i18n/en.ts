@@ -396,6 +396,18 @@ const en = {
     },
   },
 
+  profilePicture: {
+    label: 'Profile picture',
+    alt: 'Your Soulseek profile picture',
+    add: 'Add a picture',
+    change: 'Change',
+    remove: 'Remove',
+    hint: 'Shown to peers who open your profile. Resized to 512 px; applied right away, no need to save.',
+    changed: 'Profile picture changed',
+    removed: 'Profile picture removed',
+    unreadable: 'Unreadable image',
+  },
+
   switchPeer: {
     button: 'Switch peer',
     buttonPeer: 'Replace {peer}',
