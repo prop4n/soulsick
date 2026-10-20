@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING
 from sqlalchemy import select
 
 from ..audiotags import TagSet, read_meta, write_tags
-from ..matching import FileRef, MatchResult, TrackRef, match_files
+from ..matching import Assignment, FileRef, MatchResult, TrackRef, match_files
 from ..messages import M, Msg, UserError, set_reason
 from .libguard import HELD
 from ..models import (
@@ -40,6 +40,14 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 MIN_CONFIDENCE = 0.75
 _TERMINAL = {TransferState.COMPLETE, TransferState.FAILED, TransferState.ABORTED}
+
+
+def pick_key(fmt: str | None, failed: bool, candidate_id: int, a: Assignment) -> tuple:
+    """Which file to keep when several sources have the same track (the smallest wins): first the
+    one that really is that song, then the best format, an active source, the most recent one."""
+    order = [k for k, _ in ALL_FORMATS]
+    fit = 0 if a.title_score >= 0.8 else 1 if a.title_score >= 0.5 else 2
+    return (fit, order.index(fmt) if fmt in order else len(order), int(failed), -candidate_id, -a.score)
 
 
 def destination(t: Track, artist: Artist, rg: ReleaseGroup, rel: Release, template: str, music: str, ext: str) -> str:
@@ -260,7 +268,6 @@ class ImportService:
 
         preferred = next((c.matched_release_id for c, _ in sources if c.matched_release_id), None)
         ordered = sorted(releases, key=lambda r: r.id != (preferred or rg.selected_release_id))
-        order = [k for k, _ in ALL_FORMATS]
         best = None
         for rel in ordered:
             tracks = [TrackRef(t.disc, t.position, t.title, (t.length_ms or 0) / 1000 or None) for t in rel.tracks]
@@ -278,13 +285,7 @@ class ImportService:
                     unmatched_files.append(files[i])
                 for a in m.assignments:
                     f = files[a.file_index]
-                    fmt = meta[f].format
-                    key = (
-                        order.index(fmt) if fmt in order else len(order),
-                        0 if c.status != CandidateStatus.FAILED else 1,
-                        -c.id,
-                        -a.score,
-                    )
+                    key = pick_key(meta[f].format, c.status == CandidateStatus.FAILED, c.id, a)
                     entry = {"file": f, "candidate": c, "assignment": a}
                     if a.track_index not in picks or key < picks[a.track_index][0]:
                         picks[a.track_index] = (key, entry)

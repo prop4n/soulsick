@@ -98,6 +98,15 @@ def parse_numbers(path: str) -> tuple[int | None, int | None]:
     return disc, track
 
 
+_GENERIC_WORDS = {"track", "piste", "titre", "pista", "audio", "untitled"}
+
+
+def has_title(path: str) -> bool:
+    """Whether a file name says which song it is (\"06 - Song.flac\"), not only its number (\"Track 06.flac\")."""
+    words = normalize(_title_from_filename(path)).split()
+    return any(w not in _GENERIC_WORDS and not w.isdigit() for w in words)
+
+
 def _title_from_filename(path: str) -> str:
     s = stem(path)
     s = _NUM_RE.sub("", s, count=1)

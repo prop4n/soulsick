@@ -159,3 +159,48 @@ def test_notation_rapide_avec_beaucoup_d_editions():
     res = rank_candidates(peers, editions, PROFILE)
     assert time.perf_counter() - t0 < 5
     assert not res[0].rejected and res[0].detail["match"]["tracks_matched"] == 3
+
+
+# --- un fichier d'un autre album ne compte pas pour une piste sur son seul numéro ------
+
+
+def _release(titles_lengths):
+    from soulsick.models import Release, Track
+    rel = Release(id=1, mbid="r", release_group_id=1, title="Voir Mauvais", disc_count=1)
+    rel.tracks = [
+        Track(id=100 + i, release_id=1, mbid=f"t{i}", recording_mbid=f"r{i}", disc=1, position=i + 1,
+              title=t, length_ms=ln)
+        for i, (t, ln) in enumerate(titles_lengths)
+    ]
+    return rel
+
+
+VM = [("machine virtuelle", 112000), ("la chose", 110000), ("100 bouche(s)", 110000),
+      ("eugene stoner", 111000), ("warp 0", 111000), ("A7", 138000)]
+
+
+def test_couverture_refuse_un_titre_sans_rapport_sur_le_seul_numero():
+    """Cas réel : « 06-deviantart.flac » (autre EP du même pair) pris pour la piste 06 « A7 »."""
+    from soulsick.models import Candidate
+    from soulsick.services.coverage import _track_map
+
+    other_ep = Candidate(files=[{"filename": "x\\2026-(vm)vm_[vraiment_moyen]\\06-deviantart.flac", "duration": 110}])
+    assert _track_map(other_ep, _release(VM), "Ptite Soeur") == {}
+
+    # Sans titre dans le nom, le numéro reste ce qui compte
+    bare = Candidate(files=[{"filename": "x\\VM\\06.flac", "duration": 138}, {"filename": "x\\VM\\05.flac", "duration": 111}])
+    assert set(_track_map(bare, _release(VM), "Ptite Soeur")) == {105, 104}
+
+
+def test_import_prefere_le_bon_titre_a_la_source_la_plus_recente():
+    """Cas réel : « 06-deviantart » (source plus récente) avait pris la piste 03 au vrai « 03-100_bouche(s) »."""
+    from soulsick.matching import Assignment
+    from soulsick.services.importer import pick_key
+
+    right = pick_key("flac-24", failed=False, candidate_id=1328, a=Assignment(0, 2, 0.75, 1.0, True, 0.2))
+    wrong = pick_key("flac-24", failed=False, candidate_id=1333, a=Assignment(0, 2, 0.46, 0.52, False, 0.2))
+    assert right < wrong
+    # À correspondance égale, le meilleur format gagne toujours
+    flac24 = pick_key("flac-24", failed=False, candidate_id=1, a=Assignment(0, 2, 0.9, 1.0, True, 0.2))
+    flac16 = pick_key("flac", failed=False, candidate_id=2, a=Assignment(0, 2, 0.9, 1.0, True, 0.2))
+    assert flac24 < flac16

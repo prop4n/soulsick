@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 
 from sqlalchemy import select
 
-from ..matching import FileRef, TrackRef, match_files
+from ..matching import FileRef, TrackRef, has_title, match_files
 from ..models import Artist, Candidate, CandidateStatus, LibraryFile, Release, ReleaseGroup, Transfer
 from ..quality import ALL_FORMATS, is_audio, is_better_or_equal
 
@@ -28,7 +28,9 @@ def _track_map(c: Candidate, release: Release, artist: str) -> dict[int, dict]:
     m = match_files(tracks, [FileRef(f["filename"], f.get("duration")) for f in audio], artist_hint=artist)
     out = {}
     for a in m.assignments:
-        if a.title_score < 0.5 and not a.number_match:
+        # The number alone only counts for a file without a title: "06-deviantart.flac" from another
+        # album of the same peer is not track 06 "A7"
+        if a.title_score < 0.5 and not (a.number_match and not has_title(audio[a.file_index]["filename"])):
             continue
         t = release.tracks[a.track_index]
         out[t.id] = audio[a.file_index]
