@@ -10,3 +10,5 @@ data/
 *.db
 .DS_Store
 docs/
+.claude/
+skills-lock.json
