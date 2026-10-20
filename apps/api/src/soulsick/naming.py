@@ -6,6 +6,17 @@ import unicodedata
 from dataclasses import dataclass
 
 _FORBIDDEN = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
+# Usual limit of a file or folder name, in bytes (ext4, btrfs, ZFS, NTFS via most drivers…).
+# Titles stacking combining marks ("zalgo") easily go over it.
+MAX_NAME_BYTES = 255
+
+
+def fit_name(stem: str, ext: str = "", limit: int = MAX_NAME_BYTES) -> str:
+    """`stem + ext`, the stem shortened on a character boundary so the whole name fits in `limit` bytes."""
+    budget = limit - len(ext.encode())
+    if len(stem.encode()) > budget:
+        stem = stem.encode()[:budget].decode("utf-8", "ignore").rstrip(" .") or "_"
+    return stem + ext
 
 
 def sanitize(part: str) -> str:
@@ -21,7 +32,9 @@ def safe_component(part: str) -> str:
     part = sanitize(part.replace("/", "_").replace("\\", "_"))
     if part in {".", ".."} or part.startswith(".."):
         part = "_" + part.lstrip(".")
-    return part or "_"
+    stem, dot, ext = part.rpartition(".")
+    # Keep a short extension when shortening (a file name); a folder has none to keep
+    return fit_name(stem, dot + ext) if dot and stem and len(ext) <= 5 else fit_name(part)
 
 
 @dataclass
@@ -64,4 +77,6 @@ def render_path(template: str, t: TrackNaming) -> str:
     parts = [p.strip() for p in rendered.split("/") if p.strip()]
     # Les segments issus des variables sont déjà nettoyés ; on nettoie aussi le texte du modèle
     parts = [sanitize(p) for p in parts]
-    return "/".join(parts) + f".{t.ext.lower()}"
+    # Every name must fit the filesystem; the file keeps its extension
+    parts = [fit_name(p) for p in parts[:-1]] + [fit_name(parts[-1], f".{t.ext.lower()}")]
+    return "/".join(parts)

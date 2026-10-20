@@ -1,5 +1,5 @@
 from soulsick.matching import FileRef, TrackRef, match_files, parse_numbers
-from soulsick.naming import TrackNaming, render_path, sanitize
+from soulsick.naming import TrackNaming, render_path, safe_component, sanitize
 from soulsick.quality import FileInfo, detect_format, worst_format
 from soulsick.scoring import PeerResult, ReleaseOption, RemoteFile, group_key, rank_candidates
 
@@ -47,6 +47,28 @@ def test_render_path_multi_disc_and_sanitize():
 
 
 # --- matching --------------------------------------------------------------
+
+def test_render_path_long_names_fit_the_filesystem():
+    """Real case: a "zalgo" title stacks combining marks; the file name went over 255 bytes
+    and the filesystem refused it. Every segment fits, on a character boundary, extension kept."""
+    title = "M̶̲̺︦̅̄̄͆͞A̵͙︦̿̅̚E̠̠︦̄͆͆V̶̲̲̠︦̿̄E̶̲︦̿̿̅̄͆͟" * 6
+    p = render_path(
+        "{albumartist}/{year} - {album}/{track:02} - {title}",
+        TrackNaming("Ptite Soeur", "Ptite Soeur", title, "2025", title, 8, 1, 1, "flac"),
+    )
+    parts = p.split("/")
+    assert all(len(x.encode()) <= 255 for x in parts), [len(x.encode()) for x in parts]
+    assert parts[-1].startswith("08 - M") and parts[-1].endswith(".flac")
+    assert parts[1].startswith("2025 - M")
+    # Short names are left alone
+    assert render_path("{track:02} - {title}", TrackNaming("A", "A", "B", "2020", "Song", 1, 1, 1, "flac")) == "01 - Song.flac"
+
+
+def test_safe_component_fits_the_filesystem():
+    name = "08 " + "Z̶̲̲̠︦̿̿̄̄" * 40 + ".flac"
+    out = safe_component(name)
+    assert len(out.encode()) <= 255 and out.endswith(".flac") and out.startswith("08 Z")
+
 
 def test_parse_numbers():
     assert parse_numbers("Music\\Nirvana\\Nevermind\\01 - Smells.flac") == (None, 1)
