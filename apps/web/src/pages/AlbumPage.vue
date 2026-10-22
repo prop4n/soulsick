@@ -9,6 +9,7 @@ import { useRoute } from 'vue-router'
 import { toast } from 'vue-sonner'
 import CandidateCard from '@/components/CandidateCard.vue'
 import SwitchPeerMenu from '@/components/SwitchPeerMenu.vue'
+import RedownloadButton from '@/components/RedownloadButton.vue'
 import CoverArt from '@/components/CoverArt.vue'
 import CoverBackdrop from '@/components/CoverBackdrop.vue'
 import EventFeed from '@/components/EventFeed.vue'
@@ -244,6 +245,13 @@ const dismiss = useMutation({
                 <FolderInputIcon data-icon="inline-start" />
                 {{ t('album.importNow') }}
               </Button>
+              <RedownloadButton
+                v-if="album.imported_format || downloading"
+                :album-id="album.id"
+                :format="album.imported_format ? (FORMAT_LABELS[album.imported_format] ?? album.imported_format) : null"
+                :downloading="downloading"
+                @done="refresh"
+              />
               <!-- Switch the active source to another candidate, right from here -->
               <SwitchPeerMenu
                 v-for="c in activeSources"

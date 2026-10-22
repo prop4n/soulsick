@@ -408,6 +408,18 @@ const en = {
     unreadable: 'Unreadable image',
   },
 
+  redownload: {
+    button: 'Download again from Qobuz',
+    title: 'Download this album again from Qobuz?',
+    dropping: 'The current download is dropped (what already arrived is kept until the import).',
+    search: 'Soulsick looks for the album on Qobuz and starts the best version right away, even if the artist is in “ask me” mode.',
+    replace: 'The shelved files are replaced once the Qobuz version is imported. If Qobuz doesn’t have the album, nothing is deleted.',
+    replaceFormat: 'Your current files ({format}) are replaced once the Qobuz version is imported. If Qobuz doesn’t have the album, nothing is deleted.',
+    confirm: 'Download again',
+    started: 'Qobuz search started',
+    startedHint: 'Follow it in the album’s history.',
+  },
+
   switchPeer: {
     button: 'Switch peer',
     buttonPeer: 'Replace {peer}',

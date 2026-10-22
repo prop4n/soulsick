@@ -244,6 +244,8 @@ const serverFr: Record<string, string> = {
   'hunt.qobuz_fallback': '{label} : Qobuz n’a pas pu livrer, recherche sur Soulseek',
   'reason.qobuz_unavailable': 'Qobuz indisponible : {error}',
   'reason.qobuz_fallback': 'Qobuz n’a pas pu livrer, recherche sur Soulseek',
+  'album.redownload': '{label} : nouveau téléchargement depuis {source} ({n} source abandonnée) — les fichiers rangés seront remplacés une fois importé | {label} : nouveau téléchargement depuis {source} ({n} sources abandonnées) — les fichiers rangés seront remplacés une fois importé',
+  'reason.redownload': 'Remplacée : nouveau téléchargement depuis {source}',
   'error.picture_invalid': 'Ce n’est pas une image (JPEG, PNG, GIF ou WebP attendu)',
   'error.picture_too_big': 'Image trop lourde (1 Mo maximum)',
   'error.destination_taken': 'Destination déjà occupée : {path}',

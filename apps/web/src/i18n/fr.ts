@@ -407,6 +407,18 @@ const fr: Messages = {
     unreadable: 'Image illisible',
   },
 
+  redownload: {
+    button: 'Retélécharger depuis Qobuz',
+    title: 'Retélécharger cet album depuis Qobuz ?',
+    dropping: 'Le téléchargement en cours est abandonné (ce qui est déjà reçu est gardé jusqu’à l’import).',
+    search: 'Soulsick cherche l’album sur Qobuz et lance tout de suite la meilleure version, même si l’artiste est en mode « me demander ».',
+    replace: 'Les fichiers déjà rangés sont remplacés une fois la version Qobuz importée. Si Qobuz n’a pas l’album, rien n’est supprimé.',
+    replaceFormat: 'Tes fichiers actuels ({format}) sont remplacés une fois la version Qobuz importée. Si Qobuz n’a pas l’album, rien n’est supprimé.',
+    confirm: 'Retélécharger',
+    started: 'Recherche sur Qobuz lancée',
+    startedHint: 'Suis l’avancement dans l’historique de l’album.',
+  },
+
   switchPeer: {
     button: 'Changer de pair',
     buttonPeer: 'Remplacer {peer}',

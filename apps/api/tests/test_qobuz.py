@@ -185,3 +185,41 @@ async def test_jeton_masque_reste_en_place(ctx, qobuz):  # noqa: F811
     await client.put("/api/settings", json=cfg)
     assert (await core.settings.get()).qobuz.token == TOKEN
     assert json.dumps(cfg).count(TOKEN) == 0
+
+
+async def test_retelecharger_depuis_qobuz_remplace_l_album_range(ctx, qobuz):  # noqa: F811
+    """Album rangé depuis Soulseek, artiste en mode « me demander » : « Retélécharger depuis
+    Qobuz » part tout de suite et l'import remplace les fichiers rangés."""
+    client, core, engine, env = ctx
+    rid = await _setup(client, "soulseek", mode="validation")
+    engine.results = [peer_with_album()]
+    await core.hunter.hunt(rid)
+    cid = (await client.get(f"/api/albums/{rid}")).json()["candidates"][0]["id"]
+    await client.post(f"/api/candidates/{cid}/approve")
+    await _imported(client, rid)
+    soulseek_downloads = len(engine.downloads)
+
+    r = await client.post(f"/api/albums/{rid}/redownload", json={"source": "qobuz"})
+    assert r.status_code == 200, r.text
+
+    async def from_qobuz():
+        events = (await client.get("/api/events", params={"release_group_id": rid})).json()
+        done = [e for e in events if e["kind"] == "import.done"]
+        return any(e["data"].get("sources") == {"Qobuz": 3} for e in done)
+
+    await wait_for(from_qobuz)
+    assert len(engine.downloads) == soulseek_downloads, "rien redemandé sur Soulseek"
+    assert sorted(qobuz.downloads) == ["1000", "1001", "1002"]
+    album = env.music_dir / "Nirvana" / "1991 - Nevermind"
+    assert sorted(p.name for p in album.glob("*.flac")) == [
+        "01 - Smells Like Teen Spirit.flac", "02 - In Bloom.flac", "03 - Come as You Are.flac",
+    ], "remplacés, pas dupliqués"
+
+
+async def test_retelecharger_sans_jeton_ne_touche_a_rien(ctx, qobuz):  # noqa: F811
+    client, core, engine, env = ctx
+    rid = await _setup(client, "soulseek", mode="validation", token="")
+    r = await client.post(f"/api/albums/{rid}/redownload", json={"source": "qobuz"})
+    assert r.status_code == 400 and r.json()["detail"]["key"] == "qobuz.error.no_token"
+    events = [e["kind"] for e in (await client.get("/api/events", params={"release_group_id": rid})).json()]
+    assert "album.redownload" not in events

@@ -163,15 +163,23 @@ class HunterService:
             await s.commit()
         self.core.hub.publish("album", {"id": rg_id, "status": status, "status_reason": reason.text if reason else None})
 
-    async def hunt(self, rg_id: int, trigger: str = "manual", soulseek_only: bool = False) -> None:
+    async def hunt(
+        self, rg_id: int, trigger: str = "manual", soulseek_only: bool = False,
+        source: str | None = None, replace: bool = False,
+    ) -> None:
+        """`source` forces where to search (else the setting); `replace`: you asked for this album
+        again — any valid version will do (not only a better format), and the best one starts
+        right away, whatever the artist's mode. The import then replaces the shelved files."""
         async with self._lock:
             try:
-                await self._hunt(rg_id, trigger, soulseek_only)
+                await self._hunt(rg_id, trigger, soulseek_only, source, replace)
             finally:
                 self.current = None
                 self.core.hub.publish("hunter", self.state())
 
-    async def _hunt(self, rg_id: int, trigger: str, soulseek_only: bool = False) -> None:
+    async def _hunt(
+        self, rg_id: int, trigger: str, soulseek_only: bool = False, forced: str | None = None, replace: bool = False,
+    ) -> None:
         loaded = await self._load(rg_id)
         if not loaded:
             return
@@ -206,7 +214,7 @@ class HunterService:
             data={"queries": queries, "profile": profile.name, "formats": profile.formats, "trigger": trigger},
         )
 
-        source = "soulseek" if soulseek_only else cfg.source
+        source = "soulseek" if soulseek_only else (forced or cfg.source)
         all_results: list[PeerResult] = []
         run_ids: list[int] = []
         if source in ("qobuz", "qobuz_first"):
@@ -222,7 +230,7 @@ class HunterService:
                     return
 
         options = await self._options(rg, releases)
-        scored = await self._rank(all_results, options, rg, profile, cfg, artist.name, label)
+        scored = await self._rank(all_results, options, rg, profile, cfg, artist.name, label, replace)
         # Qobuz first: Soulseek is only searched when Qobuz has nothing usable
         if source == "soulseek" or (source == "qobuz_first" and not any(not c.rejected for c in scored)):
             for q in queries:
@@ -251,7 +259,7 @@ class HunterService:
                     artist_id=artist.id, release_group_id=rg_id, data={"query": q, "files": files, "peers": len(results)},
                 )
                 all_results.extend(results)
-            scored = await self._rank(all_results, options, rg, profile, cfg, artist.name, label)
+            scored = await self._rank(all_results, options, rg, profile, cfg, artist.name, label, replace)
 
         valid = [c for c in scored if not c.rejected]
         keep = valid[:30] + [c for c in scored if c.rejected][:30]
@@ -320,7 +328,7 @@ class HunterService:
             },
         )
 
-        if artist.mode == ArtistMode.AUTO:
+        if artist.mode == ArtistMode.AUTO or replace:
             await self._set_status(rg_id, AlbumStatus.SEARCHING, None, searched=True)
             await self.start_download(valid_ids[0], by="auto")
         else:
@@ -372,7 +380,10 @@ class HunterService:
         options.sort(key=lambda o: o.release_id != rg.selected_release_id)
         return options
 
-    async def _rank(self, results: list[PeerResult], options: list[ReleaseOption], rg: ReleaseGroup, profile, cfg, artist_name: str, label: str) -> list[ScoredCandidate]:
+    async def _rank(
+        self, results: list[PeerResult], options: list[ReleaseOption], rg: ReleaseGroup, profile, cfg,
+        artist_name: str, label: str, replace: bool = False,
+    ) -> list[ScoredCandidate]:
         if not results:
             return []
         self.current = {"release_group_id": rg.id, "label": label, "step": "scoring"}
@@ -389,7 +400,7 @@ class HunterService:
         # When upgrading, only a strictly better format is useful
         partial = bool(rg.total_tracks and (rg.present_tracks or 0) < rg.total_tracks)
         # A partial album gets completed: any valid folder will do, not only a better format
-        if rg.imported_format and not partial:
+        if rg.imported_format and not partial and not replace:
             for c in scored:
                 if not c.rejected and is_better_or_equal(rg.imported_format, c.format):
                     c.reject_reason = M(
@@ -696,6 +707,30 @@ class HunterService:
                 M("reason.abandoned_pick") if others else M("reason.abandoned"),
             )
         return len(dropped["ids"])
+
+    async def redownload(self, rg_id: int, source: str) -> int:
+        """You want this album again from `source`: what is downloading is dropped, the source is
+        searched and its best version starts. The shelved files are replaced only once the new
+        version is imported: if the source doesn't have the album, nothing is deleted."""
+        async with self.core.db.session() as s:
+            rg = await s.get(ReleaseGroup, rg_id)
+            if not rg:
+                raise UserError("error.album_not_found")
+            artist = await s.get(Artist, rg.artist_id)
+            assert artist
+            active = list((await s.execute(select(Candidate.id).where(
+                Candidate.release_group_id == rg_id, Candidate.status == CandidateStatus.CHOSEN,
+            ))).scalars())
+            label, artist_id = f"{artist.name} – {rg.title}", artist.id
+        name = "Qobuz" if source == "qobuz" else "Soulseek"
+        for cid in active:
+            await self._drop_source(cid, M("reason.redownload", source=name))
+        await self.core.journal.emit(
+            "album.redownload", M("album.redownload", label=label, source=name, n=len(active)),
+            artist_id=artist_id, release_group_id=rg_id, data={"source": source, "dropped": active},
+        )
+        asyncio.create_task(self.hunt(rg_id, "manual", source=source, replace=True))
+        return len(active)
 
     async def _drop_source(self, candidate_id: int, reason: Msg) -> dict | None:
         """Cancels the unfinished files of a source (what arrived is kept) and marks it failed.

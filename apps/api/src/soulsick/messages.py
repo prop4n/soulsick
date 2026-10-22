@@ -261,6 +261,8 @@ EN: dict[str, str] = {
     "hunt.qobuz_fallback": "{label}: Qobuz couldn't deliver, searching on Soulseek",
     "reason.qobuz_unavailable": "Qobuz unavailable: {error}",
     "reason.qobuz_fallback": "Qobuz couldn't deliver, searching on Soulseek",
+    "album.redownload": "{label}: downloading again from {source} ({n} source dropped) — the shelved files are replaced once it's imported | {label}: downloading again from {source} ({n} sources dropped) — the shelved files are replaced once it's imported",
+    "reason.redownload": "Replaced: downloading again from {source}",
     "error.picture_invalid": "Not an image (JPEG, PNG, GIF or WebP expected)",
     "error.picture_too_big": "Image too big (1 MB at most)",
     "error.destination_taken": "Destination already taken: {path}",
