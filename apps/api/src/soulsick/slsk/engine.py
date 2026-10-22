@@ -38,9 +38,11 @@ from aioslsk.events import (
     TransferAddedEvent,
     TransferProgressEvent,
 )
-from aioslsk.exceptions import AuthenticationError, ConnectionWriteError, PeerConnectionError
-from aioslsk.protocol.messages import PeerTransferQueue
-from aioslsk.protocol.primitives import AttributeKey, FileData
+from aioslsk.constants import TRANSFER_REPLY_TIMEOUT
+from aioslsk.exceptions import AuthenticationError, ConnectionReadError, ConnectionWriteError, PeerConnectionError
+from aioslsk.network.connection import CloseReason, PeerConnectionType
+from aioslsk.protocol.messages import PeerTransferQueue, PeerTransferReply, PeerTransferRequest, SendUploadSpeed
+from aioslsk.protocol.primitives import AttributeKey, FileData, uint32
 from aioslsk.search.model import SearchResult
 from aioslsk.settings import (
     CredentialsSettings,
@@ -224,6 +226,108 @@ class SafeTransferManager(TransferManager):
             transfer.remotely_queued = True
             transfer.reset_queue_attempts()
         self.request_management_cycle(_RequestFlag.TRANSFER_CHANGE)
+
+
+    # How long an upload waits for its file connection: ours, or the one the peer opens itself
+    FILE_CONNECTION_TIMEOUT = 30.0
+
+    async def _initialize_upload(self, transfer: SlskTransfer):
+        """aioslsk's upload start, except for the file connection.
+
+        aioslsk only ever opens it itself. When the downloader's port is closed that can fail,
+        and slskd / Soulseek.NET then opens it from its side (its "second-chance transfer
+        connection", sent with our ticket): aioslsk dropped that connection as unknown, so
+        firewalled slskd users could never download from us. Here both are raced: our own
+        connection, and the peer's carrying our ticket. The rest is aioslsk's flow, unchanged.
+        """
+        await transfer.state.initialize()
+        ticket = next(self._ticket_generator)
+        try:
+            await self._network.send_peer_messages(
+                transfer.username,
+                PeerTransferRequest.Request(
+                    TransferDirection.DOWNLOAD.value, ticket, transfer.remote_path, filesize=transfer.filesize
+                ),
+            )
+        except (ConnectionWriteError, PeerConnectionError) as exc:
+            log.debug("failed to send request to upload : %s : %r", transfer, exc)
+            await transfer.state.queue()
+            return
+
+        # Registered before the peer can answer: its own file connection may come right after
+        incoming: asyncio.Future = asyncio.get_running_loop().create_future()
+        self._file_connection_futures[ticket] = incoming
+        try:
+            try:
+                async with asyncio.timeout(TRANSFER_REPLY_TIMEOUT):
+                    _, response = await self._network.create_peer_response_future(
+                        transfer.username, PeerTransferReply.Request, fields={"ticket": ticket}
+                    )
+            except TimeoutError:
+                log.debug("timeout waiting for transfer reply : %s", transfer)
+                await transfer.state.queue()
+                return
+            if not response.allowed:
+                await transfer.state.fail(reason=response.reason)
+                return
+
+            connection, theirs = await self._file_connection(transfer, incoming)
+            if connection is None:
+                log.info("failed to create peer connection for transfer : %s", transfer)
+                await transfer.state.queue()
+                return
+        finally:
+            self._file_connection_futures.pop(ticket, None)
+            if not incoming.done():
+                incoming.cancel()
+
+        if not theirs:
+            # On a connection the peer opened, it already sent the ticket itself
+            try:
+                await connection.send_message(uint32(ticket).serialize())
+            except ConnectionWriteError:
+                log.info("failed to send transfer ticket : %d : %s", ticket, transfer)
+                await transfer.state.queue()
+                return
+        try:
+            transfer.bytes_transfered = await connection.receive_transfer_offset()
+        except ConnectionReadError:
+            log.info("failed to receive transfer offset : %s", transfer)
+            await transfer.state.queue()
+            return
+
+        await self._upload_file(transfer, connection)
+        if transfer.state.VALUE == SlskState.COMPLETE:
+            self._network.queue_server_messages(SendUploadSpeed.Request(int(transfer.get_speed())))
+
+    async def _file_connection(self, transfer: SlskTransfer, incoming: asyncio.Future):
+        """(connection, opened by the peer?) — the first of ours and theirs to be ready, else (None, False)."""
+        outgoing = asyncio.create_task(
+            self._network.create_peer_connection(transfer.username, PeerConnectionType.FILE)
+        )
+        pending = {outgoing, incoming}
+        winner = None
+        try:
+            async with asyncio.timeout(self.FILE_CONNECTION_TIMEOUT):
+                while pending and winner is None:
+                    done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
+                    for f in done:
+                        if not f.cancelled() and f.exception() is None:
+                            winner = f
+                            break
+                        log.debug("file connection attempt failed : %s : %r", transfer, f.exception() if not f.cancelled() else "cancelled")
+        except TimeoutError:
+            pass
+        if winner is not outgoing:
+            outgoing.cancel()
+            # Ours may still have gone through meanwhile: not needed
+            outgoing.add_done_callback(_close_unused)
+        return (winner.result(), winner is incoming) if winner else (None, False)
+
+
+def _close_unused(task: asyncio.Task) -> None:
+    if not task.cancelled() and task.exception() is None:
+        asyncio.create_task(task.result().disconnect(CloseReason.REQUESTED))
 
 
 class _Client(SoulSeekClient):
