@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import os
 from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import select, text, update
@@ -67,6 +68,13 @@ class Core:
         self.engine.on_chat = self.chat.on_message
         self.engine.on_room = self.chat.on_room
         self.engine.rooms_wanted = self.chat.joined_rooms
+
+    def _share_salt(self) -> bytes:
+        """Secret behind the shared folder aliases, created once and kept in the config folder."""
+        path = self.env.config_dir / "share_alias_salt"
+        if not path.is_file():
+            path.write_bytes(os.urandom(32))
+        return path.read_bytes()
 
     def backend(self, remote_path: str | None):
         """Who downloads this file: Qobuz for its own paths, the Soulseek engine for the rest."""
@@ -221,6 +229,7 @@ class Core:
         rules = await self.shares.rules()
         pic = self.env.profile_picture_path
         self.engine.picture = pic.read_bytes() if pic.is_file() else None
+        self.engine.share_salt = self._share_salt()
         await self.engine.start(cfg, rules)
         # Restart unfinished downloads (aioslsk keeps no state between runs)
         self._tasks.append(asyncio.create_task(self._resume_downloads()))

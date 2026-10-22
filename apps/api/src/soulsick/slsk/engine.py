@@ -8,6 +8,7 @@
 
 import asyncio
 import base64
+import hashlib
 import logging
 import os
 import time
@@ -147,6 +148,20 @@ class FilteringSharesManager(SharesManager):
     ni indexé, ni proposé en résultat de recherche, ni téléchargeable."""
 
     rules: dict[str, ShareRules]
+    # Per-install secret behind the folder aliases ("@@abcde")
+    salt: bytes = b""
+
+    def generate_alias(self, path: str, offset: int = 0) -> str:
+        """Same alias for the same folder across restarts.
+
+        aioslsk mixes in the MAC address, which changes each time the container is recreated:
+        every path peers had (search results, their download queues) then answered
+        "File not shared." A secret kept in the config folder plays that part instead.
+        """
+        if not self.salt:
+            return super().generate_alias(path, offset)
+        digest = hashlib.sha256(self.salt + offset.to_bytes(2, "big") + path.encode()).digest()
+        return "".join(chr(0x61 + b % 26) for b in digest[: self._ALIAS_LENGTH])
 
     async def scan_directory_files(self, shared_directory: SharedDirectory):
         await super().scan_directory_files(shared_directory)
@@ -228,17 +243,22 @@ class SafeTransferManager(TransferManager):
         self.request_management_cycle(_RequestFlag.TRANSFER_CHANGE)
 
 
-    # How long an upload waits for its file connection: ours, or the one the peer opens itself
+    # How long an upload waits for its file connection to be ready (ticket sent, offset received)
     FILE_CONNECTION_TIMEOUT = 30.0
 
     async def _initialize_upload(self, transfer: SlskTransfer):
         """aioslsk's upload start, except for the file connection.
 
-        aioslsk only ever opens it itself. When the downloader's port is closed that can fail,
-        and slskd / Soulseek.NET then opens it from its side (its "second-chance transfer
-        connection", sent with our ticket): aioslsk dropped that connection as unknown, so
-        firewalled slskd users could never download from us. Here both are raced: our own
-        connection, and the peer's carrying our ticket. The rest is aioslsk's flow, unchanged.
+        aioslsk races a direct and an indirect connection and keeps the first one *opened*. With a
+        peer whose port is closed, the direct one can open and lead nowhere (a router or firewall
+        accepting it): aioslsk then dropped the indirect one, the real one, and waited for an offset
+        that never came. And when slskd / Soulseek.NET opens the file connection itself (its
+        "second-chance transfer connection", sent with our ticket), aioslsk dropped it as unknown.
+        Firewalled slskd users could never download from us.
+
+        Here every way in — direct, indirect, and the peer's own connection — goes through the
+        whole handshake (ticket, then the peer's offset); the first one complete carries the file.
+        The rest is aioslsk's flow, unchanged.
         """
         await transfer.state.initialize()
         ticket = next(self._ticket_generator)
@@ -270,64 +290,66 @@ class SafeTransferManager(TransferManager):
             if not response.allowed:
                 await transfer.state.fail(reason=response.reason)
                 return
-
-            connection, theirs = await self._file_connection(transfer, incoming)
-            if connection is None:
-                log.info("failed to create peer connection for transfer : %s", transfer)
-                await transfer.state.queue()
-                return
+            ready = await self._file_connection(transfer, ticket, incoming)
         finally:
             self._file_connection_futures.pop(ticket, None)
             if not incoming.done():
                 incoming.cancel()
 
-        if not theirs:
-            # On a connection the peer opened, it already sent the ticket itself
-            try:
-                await connection.send_message(uint32(ticket).serialize())
-            except ConnectionWriteError:
-                log.info("failed to send transfer ticket : %d : %s", ticket, transfer)
-                await transfer.state.queue()
-                return
-        try:
-            transfer.bytes_transfered = await connection.receive_transfer_offset()
-        except ConnectionReadError:
-            log.info("failed to receive transfer offset : %s", transfer)
+        if ready is None:
+            log.info("failed to create peer connection for transfer : %s", transfer)
             await transfer.state.queue()
             return
-
+        connection, transfer.bytes_transfered = ready
         await self._upload_file(transfer, connection)
         if transfer.state.VALUE == SlskState.COMPLETE:
             self._network.queue_server_messages(SendUploadSpeed.Request(int(transfer.get_speed())))
 
-    async def _file_connection(self, transfer: SlskTransfer, incoming: asyncio.Future):
-        """(connection, opened by the peer?) — the first of ours and theirs to be ready, else (None, False)."""
-        outgoing = asyncio.create_task(
-            self._network.create_peer_connection(transfer.username, PeerConnectionType.FILE)
-        )
-        pending = {outgoing, incoming}
+    async def _file_connection(self, transfer: SlskTransfer, ticket: int, incoming: asyncio.Future):
+        """(connection, offset) of the first way in to complete the handshake, else None."""
+        net = self._network
+        user, typ = transfer.username, PeerConnectionType.FILE
+        attempts = {
+            asyncio.create_task(_handshake(lambda: net._make_direct_connection(next(net._ticket_generator), user, typ), ticket)),
+            asyncio.create_task(_handshake(lambda: net._make_indirect_connection(next(net._ticket_generator), user, typ), ticket)),
+            # The peer's own connection: it already sent our ticket on it
+            asyncio.create_task(_handshake(lambda: incoming, ticket, send_ticket=False)),
+        }
         winner = None
+        pending = attempts
         try:
             async with asyncio.timeout(self.FILE_CONNECTION_TIMEOUT):
                 while pending and winner is None:
                     done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
-                    for f in done:
-                        if not f.cancelled() and f.exception() is None:
-                            winner = f
+                    for task in done:
+                        if not task.cancelled() and task.exception() is None:
+                            winner = task
                             break
-                        log.debug("file connection attempt failed : %s : %r", transfer, f.exception() if not f.cancelled() else "cancelled")
+                        log.debug("file connection attempt failed : %s : %r", transfer, task.exception() if not task.cancelled() else "cancelled")
         except TimeoutError:
             pass
-        if winner is not outgoing:
-            outgoing.cancel()
-            # Ours may still have gone through meanwhile: not needed
-            outgoing.add_done_callback(_close_unused)
-        return (winner.result(), winner is incoming) if winner else (None, False)
+        losers = [t for t in attempts if t is not winner]
+        for task in losers:
+            task.cancel()
+        await asyncio.gather(*losers, return_exceptions=True)
+        for task in losers:
+            # Completed at the same moment as the winner: not needed
+            if not task.cancelled() and task.exception() is None:
+                await task.result()[0].disconnect(CloseReason.REQUESTED)
+        return winner.result() if winner else None
 
 
-def _close_unused(task: asyncio.Task) -> None:
-    if not task.cancelled() and task.exception() is None:
-        asyncio.create_task(task.result().disconnect(CloseReason.REQUESTED))
+async def _handshake(open_connection, ticket: int, send_ticket: bool = True):
+    """Opens a file connection and completes it: our ticket, then the downloader's offset."""
+    connection = await open_connection()
+    try:
+        if send_ticket:
+            await connection.send_message(uint32(ticket).serialize())
+        offset = await connection.receive_transfer_offset()
+    except BaseException:
+        await connection.disconnect(CloseReason.REQUESTED)
+        raise
+    return connection, offset
 
 
 class _Client(SoulSeekClient):
@@ -382,6 +404,8 @@ class SlskEngine:
         self._lifecycle = asyncio.Lock()
         # Your profile picture, sent to peers who ask for your user info
         self.picture: bytes | None = None
+        # Keeps shared folder aliases stable across restarts (see FilteringSharesManager)
+        self.share_salt: bytes = b""
 
     # --- Cycle de vie ---------------------------------------------------------
 
@@ -482,6 +506,7 @@ class SlskEngine:
         assert self.config
         client = _Client(self._build_settings(self.config))
         client.shares.rules = {os.path.normpath(os.path.abspath(s.path)): s for s in self.shares}
+        client.shares.salt = self.share_salt
         self.client = client
         client.events.register(SessionInitializedEvent, self._on_session_init)
         client.events.register(SessionDestroyedEvent, self._on_session_destroyed)
