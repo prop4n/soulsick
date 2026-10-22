@@ -31,6 +31,8 @@ from ..models import (
 from ..quality import FORMAT_LABELS, is_better_or_equal
 from ..scoring import PeerResult, ReleaseOption, ScoredCandidate, rank_candidates, unique_tracklists
 from ..slsk.engine import EngineUnavailable
+from .qobuz import PREFIX as QOBUZ_PREFIX
+from .qobuz import QobuzError
 
 if TYPE_CHECKING:
     from ..core import Core
@@ -107,7 +109,7 @@ class HunterService:
             return
         self.last_run_at = now
         self.next_run_at = now + timedelta(minutes=cfg.interval_minutes)
-        if not self.core.engine.logged_in:
+        if cfg.source == "soulseek" and not self.core.engine.logged_in:
             return
         await self.run_wanted(cfg.max_searches_per_run)
 
@@ -161,15 +163,15 @@ class HunterService:
             await s.commit()
         self.core.hub.publish("album", {"id": rg_id, "status": status, "status_reason": reason.text if reason else None})
 
-    async def hunt(self, rg_id: int, trigger: str = "manual") -> None:
+    async def hunt(self, rg_id: int, trigger: str = "manual", soulseek_only: bool = False) -> None:
         async with self._lock:
             try:
-                await self._hunt(rg_id, trigger)
+                await self._hunt(rg_id, trigger, soulseek_only)
             finally:
                 self.current = None
                 self.core.hub.publish("hunter", self.state())
 
-    async def _hunt(self, rg_id: int, trigger: str) -> None:
+    async def _hunt(self, rg_id: int, trigger: str, soulseek_only: bool = False) -> None:
         loaded = await self._load(rg_id)
         if not loaded:
             return
@@ -204,74 +206,52 @@ class HunterService:
             data={"queries": queries, "profile": profile.name, "formats": profile.formats, "trigger": trigger},
         )
 
+        source = "soulseek" if soulseek_only else cfg.source
         all_results: list[PeerResult] = []
         run_ids: list[int] = []
-        for q in queries:
-            self.current = {"release_group_id": rg_id, "label": label, "step": "search", "query": q}
-            self.core.hub.publish("hunter", self.state())
+        if source in ("qobuz", "qobuz_first"):
             try:
-                results = await self.core.engine.search(q, cfg.search_wait_seconds)
-            except EngineUnavailable as e:
-                await self._set_status(rg_id, AlbumStatus.WANTED, M("reason.soulseek_unavailable", error=e.msg))
+                all_results.extend(await self._search_qobuz(rg_id, artist.id, label, queries[0], trigger, run_ids))
+            except QobuzError as e:
                 await self.core.journal.emit(
-                    "hunt.skipped", M("hunt.skipped", label=label, error=e.msg),
+                    "hunt.qobuz_error", M("hunt.qobuz_error", label=label, error=e.msg),
                     level="warning", artist_id=artist.id, release_group_id=rg_id,
                 )
-                return
-            files = sum(len(r.files) for r in results)
-            async with self.core.db.session() as s:
-                run = SearchRun(
-                    release_group_id=rg_id, query=q, kind=trigger, result_count=files, peer_count=len(results)
-                )
-                s.add(run)
-                await s.commit()
-                run_ids.append(run.id)
-            await self.core.journal.emit(
-                "search.done",
-                M("search.done", query=q, files=files, peers=len(results)),
-                artist_id=artist.id, release_group_id=rg_id, data={"query": q, "files": files, "peers": len(results)},
-            )
-            all_results.extend(results)
+                if source == "qobuz":
+                    await self._set_status(rg_id, AlbumStatus.WANTED, M("reason.qobuz_unavailable", error=e.msg))
+                    return
 
-        self.current = {"release_group_id": rg_id, "label": label, "step": "scoring"}
-        async with self.core.db.session() as s:
-            # Tracks already shelved (e.g. by hand): a folder only needs to bring the others
-            shelved = set((await s.execute(select(LibraryFile.recording_mbid).where(
-                LibraryFile.release_group_mbid == rg.mbid, LibraryFile.recording_mbid.is_not(None),
-            ))).scalars())
-        options = [
-            ReleaseOption(
-                r.id,
-                f"{r.title} ({r.date or '?'} · {r.country or '?'} · {r.formats or '?'} · {r.track_count} tr.)",
-                [TrackRef(t.disc, t.position, t.title, (t.length_ms or 0) / 1000 or None) for t in r.tracks],
-                frozenset(i for i, t in enumerate(r.tracks) if t.recording_mbid in shelved),
-            )
-            for r in releases
-            if r.tracks
-        ]
-        # The selected edition goes first: on equal score it wins
-        options.sort(key=lambda o: o.release_id != rg.selected_release_id)
-        # Heavy work (hundreds of folders): off the event loop so the app stays responsive
-        t0 = time.perf_counter()
-        scored = await asyncio.to_thread(
-            rank_candidates,
-            all_results, options, profile.formats, profile.max_missing_tracks, cfg.min_match, artist.name,
-        )
-        log.info(
-            "%s: %d folders scored in %.1f s (%d MusicBrainz editions, %d distinct tracklists)",
-            label, len(scored), time.perf_counter() - t0, len(options), len(unique_tracklists(options)),
-        )
-
-        # When upgrading, only a strictly better format is useful
-        partial = bool(rg.total_tracks and (rg.present_tracks or 0) < rg.total_tracks)
-        # A partial album gets completed: any valid folder will do, not only a better format
-        if rg.imported_format and not partial:
-            for c in scored:
-                if not c.rejected and is_better_or_equal(rg.imported_format, c.format):
-                    c.reject_reason = M(
-                        "reject.not_better", format=FORMAT_LABELS.get(rg.imported_format, rg.imported_format)
+        options = await self._options(rg, releases)
+        scored = await self._rank(all_results, options, rg, profile, cfg, artist.name, label)
+        # Qobuz first: Soulseek is only searched when Qobuz has nothing usable
+        if source == "soulseek" or (source == "qobuz_first" and not any(not c.rejected for c in scored)):
+            for q in queries:
+                self.current = {"release_group_id": rg_id, "label": label, "step": "search", "query": q}
+                self.core.hub.publish("hunter", self.state())
+                try:
+                    results = await self.core.engine.search(q, cfg.search_wait_seconds)
+                except EngineUnavailable as e:
+                    await self._set_status(rg_id, AlbumStatus.WANTED, M("reason.soulseek_unavailable", error=e.msg))
+                    await self.core.journal.emit(
+                        "hunt.skipped", M("hunt.skipped", label=label, error=e.msg),
+                        level="warning", artist_id=artist.id, release_group_id=rg_id,
                     )
-            scored.sort(key=lambda c: (c.rejected, -c.score))
+                    return
+                files = sum(len(r.files) for r in results)
+                async with self.core.db.session() as s:
+                    run = SearchRun(
+                        release_group_id=rg_id, query=q, kind=trigger, result_count=files, peer_count=len(results)
+                    )
+                    s.add(run)
+                    await s.commit()
+                    run_ids.append(run.id)
+                await self.core.journal.emit(
+                    "search.done",
+                    M("search.done", query=q, files=files, peers=len(results)),
+                    artist_id=artist.id, release_group_id=rg_id, data={"query": q, "files": files, "peers": len(results)},
+                )
+                all_results.extend(results)
+            scored = await self._rank(all_results, options, rg, profile, cfg, artist.name, label)
 
         valid = [c for c in scored if not c.rejected]
         keep = valid[:30] + [c for c in scored if c.rejected][:30]
@@ -354,6 +334,70 @@ class HunterService:
                 artist_id=artist.id, release_group_id=rg_id,
             )
 
+    async def _search_qobuz(
+        self, rg_id: int, artist_id: int, label: str, query: str, trigger: str, run_ids: list[int],
+    ) -> list[PeerResult]:
+        self.current = {"release_group_id": rg_id, "label": label, "step": "search", "query": f"Qobuz · {query}"}
+        self.core.hub.publish("hunter", self.state())
+        results = await self.core.qobuz.search(query)
+        files = sum(len(r.files) for r in results)
+        async with self.core.db.session() as s:
+            run = SearchRun(release_group_id=rg_id, query=f"Qobuz · {query}", kind=trigger, result_count=files, peer_count=len(results))
+            s.add(run)
+            await s.commit()
+            run_ids.append(run.id)
+        await self.core.journal.emit(
+            "search.done_qobuz", M("search.done_qobuz", query=query, n=len(results)),
+            artist_id=artist_id, release_group_id=rg_id, data={"query": query, "albums": len(results)},
+        )
+        return results
+
+    async def _options(self, rg: ReleaseGroup, releases: list) -> list[ReleaseOption]:
+        async with self.core.db.session() as s:
+            # Tracks already shelved (e.g. by hand): a folder only needs to bring the others
+            shelved = set((await s.execute(select(LibraryFile.recording_mbid).where(
+                LibraryFile.release_group_mbid == rg.mbid, LibraryFile.recording_mbid.is_not(None),
+            ))).scalars())
+        options = [
+            ReleaseOption(
+                r.id,
+                f"{r.title} ({r.date or '?'} · {r.country or '?'} · {r.formats or '?'} · {r.track_count} tr.)",
+                [TrackRef(t.disc, t.position, t.title, (t.length_ms or 0) / 1000 or None) for t in r.tracks],
+                frozenset(i for i, t in enumerate(r.tracks) if t.recording_mbid in shelved),
+            )
+            for r in releases
+            if r.tracks
+        ]
+        # The selected edition goes first: on equal score it wins
+        options.sort(key=lambda o: o.release_id != rg.selected_release_id)
+        return options
+
+    async def _rank(self, results: list[PeerResult], options: list[ReleaseOption], rg: ReleaseGroup, profile, cfg, artist_name: str, label: str) -> list[ScoredCandidate]:
+        if not results:
+            return []
+        self.current = {"release_group_id": rg.id, "label": label, "step": "scoring"}
+        # Heavy work (hundreds of folders): off the event loop so the app stays responsive
+        t0 = time.perf_counter()
+        scored = await asyncio.to_thread(
+            rank_candidates,
+            results, options, profile.formats, profile.max_missing_tracks, cfg.min_match, artist_name,
+        )
+        log.info(
+            "%s: %d folders scored in %.1f s (%d MusicBrainz editions, %d distinct tracklists)",
+            label, len(scored), time.perf_counter() - t0, len(options), len(unique_tracklists(options)),
+        )
+        # When upgrading, only a strictly better format is useful
+        partial = bool(rg.total_tracks and (rg.present_tracks or 0) < rg.total_tracks)
+        # A partial album gets completed: any valid folder will do, not only a better format
+        if rg.imported_format and not partial:
+            for c in scored:
+                if not c.rejected and is_better_or_equal(rg.imported_format, c.format):
+                    c.reject_reason = M(
+                        "reject.not_better", format=FORMAT_LABELS.get(rg.imported_format, rg.imported_format)
+                    )
+            scored.sort(key=lambda c: (c.rejected, -c.score))
+        return scored
+
     # --- Download ---------------------------------------------------------
 
     async def start_download(self, candidate_id: int, by: str = "user") -> None:
@@ -406,7 +450,7 @@ class HunterService:
         )
         try:
             for p in paths:
-                await self.core.engine.download(username, p, dest)
+                await self.core.backend(p).download(username, p, dest)
         except EngineUnavailable as e:
             await self.core.journal.emit(
                 "download.error", M("download.error", label=label, error=e.msg), level="error",
@@ -473,7 +517,7 @@ class HunterService:
         # Extra files still in flight are dropped
         for t in ts:
             if t.state not in TERMINAL:
-                await self.core.engine.abort(t.username, t.remote_path, "download")
+                await self.core.backend(t.remote_path).abort(t.username, t.remote_path, "download")
         async with self.core.db.session() as s:
             row = await s.get(Candidate, candidate_id)
             assert row
@@ -571,7 +615,7 @@ class HunterService:
                 t = await s.get(Transfer, tid)
                 assert t
                 path, dest_dir = t.remote_path, os.path.dirname(t.local_path or dest)
-            await self.core.engine.download(username, path, dest_dir)
+            await self.core.backend(path).download(username, path, dest_dir)
         for tid in again:
             await self.core.transfers.requeue(tid, reset_attempts=True)
         return len(files)
@@ -756,11 +800,12 @@ class HunterService:
             ).scalars().first()
             await s.commit()
             rg_id, label, mode = rg.id, f"{artist.name} – {rg.title}", artist.mode
+            from_qobuz = c.directory.startswith(QOBUZ_PREFIX)
             next_id = nxt.id if nxt else None
             next_label = f"{nxt.username} ({nxt.score}/100)" if nxt else None
 
         for t in pending:
-            await self.core.engine.abort(t.username, t.remote_path, "download")
+            await self.core.backend(t.remote_path).abort(t.username, t.remote_path, "download")
 
         await self.core.journal.emit(
             "download.failed", M("download.failed", label=label, reason=reason), level="warning",
@@ -774,6 +819,13 @@ class HunterService:
             await self.start_download(next_id, by="auto")
         elif try_next and next_id:
             await self._set_status(rg_id, AlbumStatus.PENDING_APPROVAL, M("reason.chosen_failed"))
+        elif try_next and from_qobuz and (await self.core.settings.get()).hunter.source == "qobuz_first":
+            # Qobuz first: what Qobuz couldn't deliver is looked for on Soulseek
+            await self._set_status(rg_id, AlbumStatus.WANTED, M("reason.qobuz_fallback"))
+            await self.core.journal.emit(
+                "hunt.qobuz_fallback", M("hunt.qobuz_fallback", label=label), release_group_id=rg_id,
+            )
+            asyncio.create_task(self.hunt(rg_id, "auto", soulseek_only=True))
         else:
             await self._set_status(rg_id, AlbumStatus.WANTED, M("reason.last_failed", reason=reason))
 

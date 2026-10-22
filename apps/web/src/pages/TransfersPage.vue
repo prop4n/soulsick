@@ -30,6 +30,7 @@ import { useTransfers } from '@/composables/queries'
 import { useTransferActions } from '@/composables/transferActions'
 import { api } from '@/lib/api'
 import { speed } from '@/lib/format'
+import { isQobuz } from '@/lib/qobuz'
 import { useLive } from '@/stores/live'
 
 const { t } = useI18n()
@@ -271,7 +272,8 @@ const clear = useMutation({
             :aria-label="t('transfers.selectFolder')"
             @update:model-value="(v) => select(g.items.map(x => x.id), v === true)"
           />
-          <RouterLink :to="{ name: 'browse', params: { username: g.username } }" class="font-mono text-[12px] font-medium hover:text-primary">
+          <span v-if="isQobuz(g.dir)" class="text-[12px] font-semibold">Qobuz</span>
+          <RouterLink v-else :to="{ name: 'browse', params: { username: g.username } }" class="font-mono text-[12px] font-medium hover:text-primary">
             {{ g.username }}
           </RouterLink>
           <span class="min-w-0 truncate font-mono text-[11.5px] text-faint" :title="g.dir">{{ g.dir }}</span>

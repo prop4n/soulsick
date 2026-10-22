@@ -24,6 +24,7 @@ from .services.libguard import LibraryGuard
 from .services.library import LibraryService
 from .services.navidrome import NavidromeService
 from .services.peers import PeerService
+from .services.qobuz import QobuzService, is_qobuz
 from .services.shares import ShareService
 from .services.storage import StorageService
 from .services.transfers import TransferService
@@ -57,6 +58,7 @@ class Core:
         self.storage = StorageService(self)
         self.guard = LibraryGuard(self)
         self.peers = PeerService(self)
+        self.qobuz = QobuzService(self)
         self._tasks: list[asyncio.Task] = []
 
         self.engine.on_transfer = self.transfers.on_update
@@ -65,6 +67,10 @@ class Core:
         self.engine.on_chat = self.chat.on_message
         self.engine.on_room = self.chat.on_room
         self.engine.rooms_wanted = self.chat.joined_rooms
+
+    def backend(self, remote_path: str | None):
+        """Who downloads this file: Qobuz for its own paths, the Soulseek engine for the rest."""
+        return self.qobuz if is_qobuz(remote_path) else self.engine
 
     async def _engine_info(self, kind: str, message: Msg, data: dict) -> None:
         level = data.pop("level", "info")
@@ -220,12 +226,6 @@ class Core:
         self._tasks.append(asyncio.create_task(self._resume_downloads()))
 
     async def _resume_downloads(self) -> None:
-        for _ in range(60):
-            if self.engine.logged_in:
-                break
-            await asyncio.sleep(2)
-        else:
-            return
         async with self.db.session() as s:
             pending = list(
                 (
@@ -237,18 +237,33 @@ class Core:
                     )
                 ).scalars()
             )
-        for cid in {t.candidate_id for t in pending if t.candidate_id}:
+        if not pending:
+            return
+        # Qobuz needs no Soulseek connection: its downloads restart right away
+        qobuz = [t for t in pending if is_qobuz(t.remote_path)]
+        soulseek = [t for t in pending if not is_qobuz(t.remote_path)]
+        await self._restart(qobuz)
+        if soulseek:
+            for _ in range(60):
+                if self.engine.logged_in:
+                    break
+                await asyncio.sleep(2)
+            else:
+                return
+            await self._restart(soulseek)
+        await self.journal.emit("download.resumed", M("download.resumed", n=len(pending)))
+
+    async def _restart(self, transfers: list[Transfer]) -> None:
+        for cid in {t.candidate_id for t in transfers if t.candidate_id}:
             await self.hunter.reactivate(cid, M("reason.restart_retried", n=2))
-        for t in pending:
+        for t in transfers:
             if not t.local_path:
                 continue
             self.transfers.register("download", t.username, t.remote_path, t.id)
             try:
-                await self.engine.download(t.username, t.remote_path, t.local_path.rsplit("/", 1)[0])
+                await self.backend(t.remote_path).download(t.username, t.remote_path, t.local_path.rsplit("/", 1)[0])
             except Exception as e:
                 log.warning("resume %s: %s", t.remote_path, e)
-        if pending:
-            await self.journal.emit("download.resumed", M("download.resumed", n=len(pending)))
 
     async def _queue_loop(self) -> None:
         """Regularly asks peers for our position in their upload queue."""

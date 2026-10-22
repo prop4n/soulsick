@@ -387,6 +387,7 @@ export interface AppSettings {
     stuck_no_progress_minutes: number
     stuck_queue_minutes: number
     stuck_after_attempts: number
+    source: DownloadSource
   }
   library: {
     naming_template: string
@@ -395,6 +396,20 @@ export interface AppSettings {
     embed_cover: boolean
   }
   navidrome: { enabled: boolean, url: string, username: string, password: string }
+  qobuz: { token: string, quality: QobuzQuality, app_id: string, app_secret: string }
+}
+
+export type DownloadSource = 'soulseek' | 'qobuz' | 'qobuz_first'
+export type QobuzQuality = 27 | 7 | 6 | 5
+
+export interface QobuzTest {
+  ok: boolean
+  error?: string
+  error_t?: { key: string, params: Record<string, unknown> }
+  user?: string | null
+  subscription?: string | null
+  hires?: boolean
+  app_id?: string
 }
 
 export interface CoverageSource {
