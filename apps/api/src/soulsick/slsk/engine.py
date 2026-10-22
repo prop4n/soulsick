@@ -13,6 +13,7 @@ import logging
 import os
 import time
 from collections.abc import Awaitable, Callable
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 
 from aioslsk.client import SoulSeekClient
@@ -352,10 +353,18 @@ async def _handshake(open_connection, ticket: int, send_ticket: bool = True):
     return connection, offset
 
 
+def _shares_executor() -> ThreadPoolExecutor:
+    return ThreadPoolExecutor(max_workers=2, thread_name_prefix="slsk-shares")
+
+
 class _Client(SoulSeekClient):
     def create_shares_manager(self, cache, executor_factory=None):
+        # aioslsk reads the tags of every shared file at start-up (thousands, over the network for a
+        # Storage Box) on Python's default thread pool: everything else using that pool — scoring a
+        # hunt, reading a tag — waited behind them for minutes. Its own pool keeps them apart.
         return FilteringSharesManager(
-            self.settings, self.events, self.network, cache=cache, executor_factory=executor_factory
+            self.settings, self.events, self.network, cache=cache,
+            executor_factory=executor_factory or _shares_executor,
         )
 
     def create_transfer_manager(self, cache):

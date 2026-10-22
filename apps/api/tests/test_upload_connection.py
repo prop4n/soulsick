@@ -111,3 +111,17 @@ def test_alias_des_partages_stable_entre_redemarrages():
     assert a != alias(b"secret-2"), "une autre installation a d'autres alias"
     assert a != alias(b"secret-1", "/shares")
     assert a != alias(b"secret-1", offset=1), "décalage en cas de collision"
+
+
+def test_le_scan_des_partages_a_son_propre_pool(tmp_path):
+    """Cas réel : au démarrage, la lecture des tags de 2 379 fichiers partagés (sshfs) occupait le
+    pool de threads par défaut ; la notation d'une chasse Qobuz restait bloquée derrière."""
+    from soulsick.settings_store import SoulseekSettings
+    from soulsick.slsk.engine import SlskEngine, _Client
+
+    engine = SlskEngine(str(tmp_path))
+    client = _Client(engine._build_settings(SoulseekSettings(username="u", password="p")))
+    assert client.shares.executor_factory is not None
+    pool = client.shares.executor_factory()
+    assert pool._max_workers == 2
+    pool.shutdown()
