@@ -436,6 +436,13 @@ async def patch_album(rid: int, body: AlbumPatch, core: Core = Depends(get_core)
             ),
             artist_id=rg.artist_id, release_group_id=rid,
         )
+        # Tracks present against the new edition; a longer one leaves tracks to find
+        await core.library.refresh_artist(rg.artist_id)
+        async with core.db.session() as s:
+            rg = await s.get(ReleaseGroup, rid)
+            missing = rg.monitored and rg.status == AlbumStatus.WANTED
+        if missing:
+            asyncio.create_task(core.hunter.hunt(rid, trigger="manual"))
     async with core.db.session() as s:
         rg = await s.get(ReleaseGroup, rid)
         return rg_dict(rg)

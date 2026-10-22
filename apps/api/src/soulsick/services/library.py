@@ -169,6 +169,13 @@ class LibraryService:
                 totals = [rel_tracks[f.release_mbid] for f in fs if f.release_mbid in rel_tracks]
                 selected = rel_by_id.get(rg.selected_release_id) if rg.selected_release_id else None
                 total = max(totals) if totals else (selected.track_count if selected else None)
+                if selected and selected.track_count:
+                    # The edition you chose sets the bar, whatever edition the files were tagged with
+                    # (e.g. 11 tracks shelved, the 12-track edition retained: one is missing)
+                    total = selected.track_count
+                    wanted = {t.recording_mbid for t in selected.tracks}
+                    if any(f.recording_mbid for f in fs):
+                        present = len({f.recording_mbid for f in fs if f.recording_mbid in wanted})
                 rg.present_tracks, rg.total_tracks = present, total
                 tolerated = profile.max_missing_tracks if profile else 0
                 partial = bool(total and present < total - tolerated)
