@@ -422,11 +422,34 @@ class HunterService:
             artist = await s.get(Artist, rg.artist_id)
             assert artist
             dest = os.path.join(str(self.core.env.downloads_dir), f"album-{rg.id}", f"candidate-{c.id}")
+            # The same source already failed for this album (a later hunt picks it again): its
+            # folder is taken over and only the files it lacks are asked for. Otherwise each hunt
+            # downloaded the whole album again, in a new folder, until the disk was full.
+            received: dict[str, Transfer] = {}
+            prev = (await s.execute(
+                select(Candidate).where(
+                    Candidate.release_group_id == rg.id, Candidate.id != c.id,
+                    Candidate.username == c.username, Candidate.directory == c.directory,
+                    Candidate.status == CandidateStatus.FAILED, Candidate.download_dir.is_not(None),
+                ).order_by(Candidate.id.desc())
+            )).scalars().first()
+            if prev and prev.download_dir and os.path.isdir(prev.download_dir):
+                dest, prev.download_dir = prev.download_dir, None
+                prev_rows = await s.execute(select(Transfer).where(Transfer.candidate_id == prev.id))
+                for t in prev_rows.scalars():
+                    if t.state == TransferState.COMPLETE and t.local_path and os.path.isfile(t.local_path):
+                        received[t.remote_path] = t
             c.status = CandidateStatus.CHOSEN
             c.download_dir = dest
             files = [f for f in c.files if not f.get("extra") or cfg.download_covers]
             transfers = []
             for f in files:
+                done = received.get(f["filename"])
+                if done:
+                    # One row per file: the received one moves to this candidate
+                    done.candidate_id = c.id
+                    transfers.append(done)
+                    continue
                 t = Transfer(
                     direction="download",
                     username=c.username,
@@ -445,9 +468,10 @@ class HunterService:
             await s.commit()
             label = f"{artist.name} – {rg.title}"
             username, directory, rg_id, artist_id = c.username, c.directory, rg.id, artist.id
-            paths = [f["filename"] for f in files]
+            paths = [f["filename"] for f in files if f["filename"] not in received]
             for t in transfers:
-                self.core.transfers.register("download", t.username, t.remote_path, t.id)
+                if t.state != TransferState.COMPLETE:
+                    self.core.transfers.register("download", t.username, t.remote_path, t.id)
 
         self.core.hub.publish("album", {"id": rg_id, "status": AlbumStatus.DOWNLOADING})
         await self.core.journal.emit(
@@ -459,6 +483,10 @@ class HunterService:
             artist_id=artist_id, release_group_id=rg_id, candidate_id=candidate_id,
             data={"username": username, "directory": directory, "destination": dest, "files": paths, "by": by},
         )
+        if not paths:
+            # Every file was already there: straight to the import
+            await self.on_transfer_terminal(candidate_id)
+            return
         try:
             for p in paths:
                 await self.core.backend(p).download(username, p, dest)

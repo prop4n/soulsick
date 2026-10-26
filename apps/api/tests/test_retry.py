@@ -1,6 +1,7 @@
 """Relances de transferts : une relance ne doit jamais perdre le lien avec l'album."""
 
 import asyncio
+import os
 
 from fakes import TRACKS, peer_with_album
 from test_flow import ctx, wait_for  # noqa: F401
@@ -95,6 +96,47 @@ async def test_reprendre_un_candidat_ne_retelecharge_que_le_manquant(ctx):  # no
     await wait_for(imported)
     assert len(engine.downloads) - before == 1, "seul le fichier manquant est redemandé"
     assert len(await _rows(core)) == 3
+
+
+async def _gave_up(client, rid):
+    async def gave_up():
+        return await _status(client, rid) in ("pending_approval", "wanted")
+
+    await wait_for(gave_up)
+
+
+def _album_dirs(env, rid):
+    path = os.path.join(str(env.downloads_dir), f"album-{rid}")
+    return sorted(os.listdir(path)) if os.path.isdir(path) else []
+
+
+async def test_nouvelle_chasse_reprend_le_dossier_de_la_meme_source(ctx):  # noqa: F811
+    """Chasse suivante (toutes les 12 h) sur la même source après un échec : seuls les
+    fichiers manquants sont redemandés, dans le même dossier (avant : l'album entier,
+    dans un nouveau dossier à chaque fois, jusqu'à remplir le disque)."""
+    client, core, engine, env = ctx
+    engine.script[FILE2] = ["fail", "fail", "fail"]
+    rid = await _setup(client, core, engine, mode="auto")
+    await _gave_up(client, rid)
+    assert len(_album_dirs(env, rid)) == 1
+
+    # Même source, toujours refusée : rien d'autre n'est retéléchargé, aucun dossier en plus
+    engine.script[FILE2] = ["fail", "fail", "fail"]
+    before = len(engine.downloads)
+    await core.hunter.hunt(rid, trigger="auto")
+    await _gave_up(client, rid)
+    assert all(p.endswith(FILE2) for _, p, _ in engine.downloads[before:])
+    assert len(_album_dirs(env, rid)) == 1
+
+    # Cette fois la source livre : seul le fichier manquant est redemandé, puis l'import
+    before = len(engine.downloads)
+    await core.hunter.hunt(rid, trigger="auto")
+
+    async def imported():
+        return await _status(client, rid) == "imported"
+
+    await wait_for(imported)
+    assert len(engine.downloads) - before == 1
 
 
 async def test_arrivee_tardive_apres_abandon(ctx):  # noqa: F811
