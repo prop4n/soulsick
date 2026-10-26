@@ -3,7 +3,7 @@ import os
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import desc, func, select
 
 from ..core import Core
@@ -52,6 +52,17 @@ async def mb_search(q: str, core: Core = Depends(get_core)) -> list[dict]:
 
 class ArtistIn(BaseModel):
     mbid: str
+    mode: ArtistMode = ArtistMode.VALIDATION
+    quality_profile_id: int | None = None
+    primary_types: list[str] = ["album", "ep"]
+    secondary_types: list[str] = []
+    monitor: Literal["none", "future", "all"] = "none"
+
+
+class ArtistsIn(BaseModel):
+    """Several artists followed at once, each with the same settings."""
+
+    mbids: list[str] = Field(min_length=1, max_length=100)
     mode: ArtistMode = ArtistMode.VALIDATION
     quality_profile_id: int | None = None
     primary_types: list[str] = ["album", "ep"]
@@ -137,6 +148,22 @@ async def add_artist(body: ArtistIn, core: Core = Depends(get_core)) -> dict:
         raise HTTPException(502, str(e)) from e
     stats = await _artist_stats(core, [a.id])
     return artist_dict(a, stats.get(a.id))
+
+
+@router.post("/artists/bulk")
+async def add_artists(body: ArtistsIn, core: Core = Depends(get_core)) -> dict:
+    """Each artist takes MusicBrainz a few seconds (its whole discography): they are added
+    one after the other in the background; each one shows up as it is added."""
+    mbids = list(dict.fromkeys(body.mbids))
+    asyncio.create_task(core.catalog.add_artists(
+        mbids,
+        mode=body.mode,
+        quality_profile_id=body.quality_profile_id,
+        primary_types=body.primary_types,
+        secondary_types=body.secondary_types,
+        monitor=body.monitor,
+    ))
+    return {"queued": len(mbids)}
 
 
 @router.get("/artists/{aid}")

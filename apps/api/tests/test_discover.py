@@ -1,7 +1,7 @@
 """Découvrir : des artistes à suivre, d'après les artistes similaires (ListenBrainz) de ceux suivis."""
 
 import httpx
-from test_flow import ctx  # noqa: F401
+from test_flow import ctx, wait_for  # noqa: F401
 
 from soulsick.models import Artist
 
@@ -113,6 +113,26 @@ async def test_un_artiste_en_double_chez_listenbrainz_ne_compte_qu_une_fois(ctx)
         SIMILAR[VALD].pop()
     recos = (await client.get("/api/discover")).json()["recommendations"]
     assert [x["name"] for x in recos] == ["Damso", "PNL", "Orelsan"]
+
+
+async def test_suivre_plusieurs_artistes_avec_les_memes_reglages(ctx):  # noqa: F811
+    """Sélection multiple : chaque artiste est ajouté avec les mêmes réglages, en arrière-plan."""
+    client, core, engine, env = ctx
+    await client.post("/api/auth/setup", json={"username": "admin", "password": "motdepasse"})
+    r = await client.post("/api/artists/bulk", json={
+        "mbids": [DAMSO, PNL, DAMSO], "mode": "auto", "primary_types": ["album"],
+        "secondary_types": ["live"], "monitor": "all",
+    })
+    assert r.status_code == 200
+    assert r.json()["queued"] == 2, "un artiste coché deux fois n'est ajouté qu'une fois"
+
+    async def both_added():
+        artists = (await client.get("/api/artists")).json()
+        return len(artists) == 2 and all(a["stats"]["monitored"] for a in artists)
+
+    await wait_for(both_added)
+    for a in (await client.get("/api/artists")).json():
+        assert (a["mode"], a["primary_types"], a["secondary_types"]) == ("auto", ["album"], ["live"])
 
 
 async def test_listenbrainz_injoignable_ne_casse_rien(ctx):  # noqa: F811

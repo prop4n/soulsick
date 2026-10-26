@@ -106,6 +106,21 @@ class CatalogService:
         await self.sync_artist(a.id, initial_monitor=monitor)
         return a
 
+    async def add_artists(self, mbids: list[str], **settings) -> int:
+        """Follows several artists with the same settings, one after the other (MusicBrainz
+        allows one request per second). One that fails doesn't stop the others."""
+        added = 0
+        for mbid in mbids:
+            try:
+                await self.add_artist(mbid, **settings)
+                added += 1
+            except Exception as e:
+                await self.core.journal.emit(
+                    "musicbrainz.sync_failed", M("musicbrainz.sync_failed", name=mbid, error=str(e)),
+                    level="error",
+                )
+        return added
+
     async def sync_artist(self, artist_id: int, initial_monitor: str | None = None) -> None:
         """Récupère la discographie et marque comme recherchés les albums suivis non présents."""
         async with self.core.db.session() as s:

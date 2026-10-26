@@ -2,16 +2,18 @@
 import type { DiscoverResponse, Recommendation } from '@/lib/types'
 import { CompassIcon, PlusIcon, RefreshCwIcon, XIcon } from '@lucide/vue'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/vue-query'
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { toast } from 'vue-sonner'
 import AddArtistDialog from '@/components/AddArtistDialog.vue'
 import PageHeader from '@/components/PageHeader.vue'
 import { Button } from '@/components/ui/button'
+import { Checkbox } from '@/components/ui/checkbox'
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from '@/components/ui/empty'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Spinner } from '@/components/ui/spinner'
 import { api } from '@/lib/api'
+import { cn } from '@/lib/utils'
 
 const { t } = useI18n()
 const qc = useQueryClient()
@@ -37,12 +39,37 @@ const dismiss = useMutation({
   onSuccess: () => qc.invalidateQueries({ queryKey: ['discover'] }),
 })
 
-const following = ref<{ mbid: string, name: string } | null>(null)
+// Several recommendations followed at once, with the same settings
+const selected = ref(new Set<string>())
+watch(recos, (list) => {
+  const visible = new Set(list.map(r => r.mbid))
+  if ([...selected.value].some(m => !visible.has(m)))
+    selected.value = new Set([...selected.value].filter(m => visible.has(m)))
+})
+function select(mbids: string[], on: boolean) {
+  const next = new Set(selected.value)
+  for (const m of mbids) on ? next.add(m) : next.delete(m)
+  selected.value = next
+}
+const selection = computed(() => recos.value.filter(r => selected.value.has(r.mbid)))
+const allState = computed(() => !selection.value.length
+  ? false
+  : selection.value.length === recos.value.length ? true : 'indeterminate')
+
+const presets = ref<{ mbid: string, name: string }[]>([])
 const addOpen = ref(false)
-function follow(r: Recommendation) {
-  following.value = { mbid: r.mbid, name: r.name }
+function follow(list: Recommendation[]) {
+  presets.value = list.map(r => ({ mbid: r.mbid, name: r.name }))
   addOpen.value = true
 }
+
+const dismissMany = useMutation({
+  mutationFn: (mbids: string[]) => Promise.all(mbids.map(mbid => api.post('/discover/dismiss', { mbid }))),
+  onSuccess: () => {
+    selected.value = new Set()
+    qc.invalidateQueries({ queryKey: ['discover'] })
+  },
+})
 
 function initials(name: string) {
   return name.split(/\s+/).filter(Boolean).slice(0, 2).map(w => w[0]!.toUpperCase()).join('')
@@ -81,14 +108,47 @@ function initials(name: string) {
       </EmptyHeader>
     </Empty>
 
-    <ul v-else class="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+    <template v-else>
+      <!-- Selection bar: stays visible while scrolling -->
+      <div class="sticky top-16 z-10 mb-4 flex min-h-11 flex-wrap items-center gap-2 rounded-xl border bg-background/90 px-4 py-1.5 backdrop-blur lg:top-3">
+        <label class="flex items-center gap-2.5 text-[12.5px] text-muted-foreground">
+          <Checkbox :model-value="allState" @update:model-value="(v) => select(recos.map(r => r.mbid), v === true)" />
+          {{ selection.length ? t('discover.selected', selection.length) : t('discover.selectAll') }}
+        </label>
+        <div v-if="selection.length" class="ml-auto flex flex-wrap items-center gap-1">
+          <Button size="sm" @click="follow(selection)">
+            <PlusIcon data-icon="inline-start" />
+            {{ t('discover.followSelection', selection.length) }}
+          </Button>
+          <Button variant="ghost" size="sm" :disabled="dismissMany.isPending.value" @click="dismissMany.mutate(selection.map(r => r.mbid))">
+            <XIcon data-icon="inline-start" />
+            {{ t('discover.dismiss') }}
+          </Button>
+          <Button variant="ghost" size="sm" class="text-muted-foreground" @click="selected = new Set()">
+            {{ t('discover.deselect') }}
+          </Button>
+        </div>
+      </div>
+
+    <ul class="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
       <li
         v-for="r in recos"
         :key="r.mbid"
-        class="group relative flex gap-3.5 rounded-xl bg-card/60 p-4 ring-1 ring-white/[0.03]"
+        :class="cn(
+          'group relative flex gap-3.5 rounded-xl bg-card/60 p-4 ring-1 ring-white/[0.03] transition-shadow',
+          selected.has(r.mbid) && 'ring-primary/50',
+        )"
       >
-        <div class="flex size-11 shrink-0 items-center justify-center rounded-full bg-primary/10 font-mono text-[13px] text-primary">
-          {{ initials(r.name) }}
+        <div class="relative shrink-0">
+          <div class="flex size-11 items-center justify-center rounded-full bg-primary/10 font-mono text-[13px] text-primary">
+            {{ initials(r.name) }}
+          </div>
+          <Checkbox
+            :model-value="selected.has(r.mbid)"
+            :aria-label="t('discover.selectOne', { name: r.name })"
+            class="absolute -top-1 -left-1 bg-background"
+            @update:model-value="(v) => select([r.mbid], v === true)"
+          />
         </div>
         <div class="flex min-w-0 flex-1 flex-col gap-1">
           <div class="flex items-baseline gap-2">
@@ -106,7 +166,7 @@ function initials(name: string) {
             <div class="h-1 flex-1 rounded-full bg-white/[0.06]" :title="t('discover.match', { n: r.score })">
               <div class="h-full rounded-full bg-primary/70" :style="{ width: `${r.score}%` }" />
             </div>
-            <Button size="xs" @click="follow(r)">
+            <Button size="xs" @click="follow([r])">
               <PlusIcon data-icon="inline-start" />
               {{ t('discover.follow') }}
             </Button>
@@ -123,7 +183,8 @@ function initials(name: string) {
         </button>
       </li>
     </ul>
+    </template>
 
-    <AddArtistDialog v-model:open="addOpen" :preset="following" />
+    <AddArtistDialog v-model:open="addOpen" :presets="presets" @done="selected = new Set()" />
   </div>
 </template>

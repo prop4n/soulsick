@@ -73,7 +73,7 @@ export const useLive = defineStore('live', () => {
         if (msg.data.release_group_id)
           invalidate('album', 'albums', 'artist', 'plan')
         if (msg.data.kind.startsWith('artist') || msg.data.kind.startsWith('musicbrainz'))
-          invalidate('artists', 'artist')
+          invalidate('artists', 'artist', 'discover', 'similar')
         if (msg.data.kind.startsWith('share'))
           invalidate('shares')
         break

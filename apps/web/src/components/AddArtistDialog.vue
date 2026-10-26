@@ -22,8 +22,10 @@ import { RELEASE_TYPES, releaseTypeLabel, SECONDARY_TYPES } from '@/lib/status'
 import { cn } from '@/lib/utils'
 
 const open = defineModel<boolean>('open', { default: false })
-// Artist already chosen (Discover, similar artists): straight to "how to follow it"
-const props = defineProps<{ preset?: { mbid: string, name: string } | null }>()
+// Artists already chosen (Discover, similar artists): straight to "how to follow them".
+// Several at once: the same settings for each, added in the background.
+const props = defineProps<{ presets?: { mbid: string, name: string }[] }>()
+const emit = defineEmits<{ done: [] }>()
 const { t } = useI18n()
 const router = useRouter()
 const qc = useQueryClient()
@@ -51,12 +53,18 @@ const { data: results, isFetching } = useQuery({
   staleTime: 60_000,
 })
 
+const many = ref<{ mbid: string, name: string }[]>([])
+
 watch(open, (o) => {
-  if (o && props.preset) {
+  const presets = props.presets ?? []
+  if (o && presets.length > 1)
+    many.value = [...presets]
+  else if (o && presets.length === 1) {
+    const preset = presets[0]!
     picked.value = {
-      mbid: props.preset.mbid,
-      name: props.preset.name,
-      sort_name: props.preset.name,
+      mbid: preset.mbid,
+      name: preset.name,
+      sort_name: preset.name,
       disambiguation: '',
       country: null,
       type: null,
@@ -70,6 +78,7 @@ watch(open, (o) => {
     setTimeout(() => {
       q.value = ''
       picked.value = null
+      many.value = []
     }, 200)
   }
 })
@@ -91,6 +100,31 @@ const add = useMutation({
   },
   onError: e => toast.error(t('addArtist.failed'), { description: e.message }),
 })
+
+const addMany = useMutation({
+  mutationFn: () => api.post<{ queued: number }>('/artists/bulk', {
+    mbids: many.value.map(a => a.mbid),
+    mode: mode.value,
+    quality_profile_id: profileId.value ? Number(profileId.value) : null,
+    primary_types: primary.value,
+    secondary_types: secondary.value,
+    monitor: monitor.value,
+  }),
+  onSuccess: (r) => {
+    toast.success(t('addArtist.addingMany', { n: r.queued }, r.queued), { description: t('addArtist.addingManyHint') })
+    open.value = false
+    emit('done')
+  },
+  onError: e => toast.error(t('addArtist.failed'), { description: e.message }),
+})
+
+const pending = computed(() => add.isPending.value || addMany.isPending.value)
+function submit() {
+  if (many.value.length)
+    addMany.mutate()
+  else
+    add.mutate()
+}
 </script>
 
 <template>
@@ -98,17 +132,22 @@ const add = useMutation({
     <DialogContent class="gap-0 overflow-hidden p-0 sm:max-w-[560px]">
       <DialogHeader class="border-b px-6 pt-5 pb-4">
         <DialogTitle class="text-[16px]">
-          {{ picked ? t('addArtist.follow', { name: picked.name }) : t('common.followArtist') }}
+          {{ many.length
+            ? t('addArtist.followMany', { n: many.length }, many.length)
+            : picked ? t('addArtist.follow', { name: picked.name }) : t('common.followArtist') }}
         </DialogTitle>
         <DialogDescription class="text-[12.5px]">
-          {{ picked
-            ? t('addArtist.howHint')
-            : t('addArtist.searchHint') }}
+          {{ many.length
+            ? t('addArtist.howManyHint')
+            : picked ? t('addArtist.howHint') : t('addArtist.searchHint') }}
         </DialogDescription>
+        <p v-if="many.length" class="line-clamp-3 pt-1 text-[12px] text-foreground/80">
+          {{ many.map(a => a.name).join(', ') }}
+        </p>
       </DialogHeader>
 
       <!-- Step 1: pick the artist -->
-      <div v-if="!picked" class="flex flex-col gap-3 p-4">
+      <div v-if="!picked && !many.length" class="flex flex-col gap-3 p-4">
         <InputGroup>
           <InputGroupAddon>
             <SearchIcon />
@@ -157,7 +196,7 @@ const add = useMutation({
       </div>
 
       <!-- Step 2: how to follow -->
-      <form v-else class="flex flex-col gap-6 px-6 py-5" @submit.prevent="add.mutate()">
+      <form v-else class="flex flex-col gap-6 px-6 py-5" @submit.prevent="submit()">
         <FieldGroup>
           <FieldSet>
             <FieldLegend variant="label">
@@ -233,13 +272,18 @@ const add = useMutation({
         </FieldGroup>
 
         <DialogFooter :class="cn('-mx-6 -mb-5 border-t bg-well/50 px-6 py-3.5 sm:justify-between')">
-          <Button type="button" variant="ghost" size="sm" @click="picked = null">
+          <Button v-if="many.length" type="button" variant="ghost" size="sm" @click="open = false">
+            {{ t('common.cancel') }}
+          </Button>
+          <Button v-else type="button" variant="ghost" size="sm" @click="picked = null">
             <ArrowLeftIcon data-icon="inline-start" />
             {{ t('addArtist.other') }}
           </Button>
-          <Button type="submit" size="sm" :disabled="add.isPending.value || !primary.length">
-            <Spinner v-if="add.isPending.value" data-icon="inline-start" />
-            {{ t('addArtist.follow', { name: picked.name }) }}
+          <Button type="submit" size="sm" :disabled="pending || !primary.length">
+            <Spinner v-if="pending" data-icon="inline-start" />
+            {{ many.length
+              ? t('addArtist.followMany', { n: many.length }, many.length)
+              : t('addArtist.follow', { name: picked!.name }) }}
           </Button>
         </DialogFooter>
       </form>

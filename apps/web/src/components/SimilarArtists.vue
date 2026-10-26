@@ -59,6 +59,6 @@ function follow(a: SimilarArtist) {
         </button>
       </li>
     </ul>
-    <AddArtistDialog v-model:open="addOpen" :preset="following" />
+    <AddArtistDialog v-model:open="addOpen" :presets="following ? [following] : []" />
   </section>
 </template>
