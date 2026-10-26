@@ -32,6 +32,7 @@ const serverFr: Record<string, string> = {
   'reason.stalled': 'aucun transfert n’a démarré en {minutes} minutes (pair absent ou file pleine)',
   'reason.dismissed': 'Propositions refusées',
   'reason.restart_interrupted': 'Recherche interrompue par un redémarrage',
+  'reason.import_interrupted': 'Import interrompu par un redémarrage : réexaminé',
   'reason.files_missing': 'Fichiers absents de la bibliothèque',
   'reason.upgrading': 'Présent en {format}, recherche d’une meilleure qualité',
   'reason.imported_upgrading': 'Importé en {format}, recherche d’une meilleure qualité',

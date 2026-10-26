@@ -124,12 +124,38 @@ class Core:
                     status_reason_t=M("reason.restart_interrupted").to_json(),
                 )
             )
+            # An import cut short: the album stayed "importing", which the library never re-examines.
+            # Back to wanted: the library puts it back as imported if its files were shelved, and
+            # files still in the downloads are imported again.
+            interrupted = list((await s.execute(
+                select(ReleaseGroup.id).where(ReleaseGroup.status == AlbumStatus.IMPORTING)
+            )).scalars())
+            reimport: list[int] = []
+            if interrupted:
+                await s.execute(
+                    update(ReleaseGroup)
+                    .where(ReleaseGroup.id.in_(interrupted))
+                    .values(
+                        status=AlbumStatus.WANTED,
+                        status_reason=M("reason.import_interrupted").text,
+                        status_reason_t=M("reason.import_interrupted").to_json(),
+                    )
+                )
+                reimport = [
+                    c.id for c in (await s.execute(select(Candidate).where(
+                        Candidate.release_group_id.in_(interrupted),
+                        Candidate.status == CandidateStatus.DOWNLOADED,
+                    ))).scalars()
+                    if c.download_dir and os.path.isdir(c.download_dir) and os.listdir(c.download_dir)
+                ]
             await s.execute(
                 update(Transfer)
                 .where(Transfer.direction == "upload", Transfer.state.not_in(["complete", "failed", "aborted"]))
                 .values(state=TransferState.ABORTED, error=M("transfer.restart_interrupted").text)
             )
             await s.commit()
+        for cid in reimport:
+            self._tasks.append(asyncio.create_task(self.importer.import_candidate(cid)))
         await self._merge_orphan_downloads()
         await self._repair_requeued_imports()
 

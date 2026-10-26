@@ -44,6 +44,7 @@ EN: dict[str, str] = {
     "reason.stalled": "no transfer started within {minutes} minutes (peer away or queue full)",
     "reason.dismissed": "Proposals rejected",
     "reason.restart_interrupted": "Search interrupted by a restart",
+    "reason.import_interrupted": "Import interrupted by a restart: re-examined",
     "reason.files_missing": "Files missing from the library",
     "reason.upgrading": "Present as {format}, looking for better quality",
     "reason.imported_upgrading": "Imported as {format}, looking for better quality",

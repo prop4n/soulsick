@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import logging
 import os
+import shutil
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
@@ -64,6 +66,11 @@ class TransferService:
         self._lock = asyncio.Lock()
         # Download motion: since when each one last moved, and why it counts as stuck (if it does)
         self._watch: dict[int, dict] = {}
+        # Downloads asked and not finished yet. A second album asking for the same file from the
+        # same source (two MusicBrainz entries for one single) gets a twin row: the file is copied
+        # to it when it arrives, instead of a second request that would replace the first one.
+        self._pending: set[int] = set()
+        self._twins: dict[int, list[int]] = {}
 
     async def _find_id(self, u: TransferUpdate) -> int | None:
         key = (u.direction, u.username, u.remote_path)
@@ -281,6 +288,10 @@ class TransferService:
         if prev == u.state:
             return
         await self._journal(data, prev)
+        if u.state in TERMINAL and data["direction"] == "download":
+            self._pending.discard(tid)
+            # Before this album's import, which moves the file away
+            await self._settle_twins(tid, u)
         if u.state in TERMINAL and data["candidate_id"]:
             # Outside the lock: what follows (import, fallback) starts transfers again
             asyncio.create_task(self.core.hunter.on_transfer_terminal(data["candidate_id"]))
@@ -413,9 +424,33 @@ class TransferService:
             asyncio.create_task(self.core.hunter.on_transfer_terminal(data["candidate_id"]))
         return True
 
-    def register(self, direction: str, username: str, remote_path: str, tid: int) -> None:
-        """Associe un transfert aioslsk à la ligne créée en base par Soulsick."""
-        self._ids[(direction, username, remote_path)] = tid
+    def register(self, direction: str, username: str, remote_path: str, tid: int) -> bool:
+        """Associe un transfert aioslsk à la ligne créée en base par Soulsick. True when the same
+        file is already being downloaded for another row: `tid` becomes its twin, and must not
+        be asked for again."""
+        key = (direction, username, remote_path)
+        prev = self._ids.get(key)
+        if direction == "download" and prev is not None and prev != tid and prev in self._pending:
+            self._twins.setdefault(prev, []).append(tid)
+            return True
+        self._ids[key] = tid
+        if direction == "download":
+            self._pending.add(tid)
+        return False
+
+    async def _settle_twins(self, tid: int, u: TransferUpdate) -> None:
+        """The file of `tid` reached a final state: its twins get the same, and a copy of it."""
+        for twin in self._twins.pop(tid, []):
+            async with self.core.db.session() as s:
+                t = await s.get(Transfer, twin)
+                dest = t.local_path if t else None
+            if not dest:
+                continue
+            arrived = u.state == TransferState.COMPLETE and u.local_path and os.path.isfile(u.local_path)
+            if arrived and os.path.abspath(dest) != os.path.abspath(u.local_path):
+                os.makedirs(os.path.dirname(dest), exist_ok=True)
+                await asyncio.to_thread(shutil.copyfile, u.local_path, dest)
+            await self._persist(twin, dataclasses.replace(u, local_path=dest))
 
     def live(self, tid: int) -> dict | None:
         return self._live.get(tid)

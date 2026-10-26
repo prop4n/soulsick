@@ -468,10 +468,14 @@ class HunterService:
             await s.commit()
             label = f"{artist.name} – {rg.title}"
             username, directory, rg_id, artist_id = c.username, c.directory, rg.id, artist.id
-            paths = [f["filename"] for f in files if f["filename"] not in received]
-            for t in transfers:
-                if t.state != TransferState.COMPLETE:
-                    self.core.transfers.register("download", t.username, t.remote_path, t.id)
+            # Already being downloaded for another album (same file, same source): it is copied
+            # here when it arrives, not asked for a second time
+            twins = {
+                t.remote_path for t in transfers
+                if t.state != TransferState.COMPLETE
+                and self.core.transfers.register("download", t.username, t.remote_path, t.id)
+            }
+            paths = [f["filename"] for f in files if f["filename"] not in received.keys() | twins]
 
         self.core.hub.publish("album", {"id": rg_id, "status": AlbumStatus.DOWNLOADING})
         await self.core.journal.emit(
