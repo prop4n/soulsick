@@ -125,3 +125,28 @@ def test_le_scan_des_partages_a_son_propre_pool(tmp_path):
     pool = client.shares.executor_factory()
     assert pool._max_workers == 2
     pool.shutdown()
+
+
+async def test_arreter_le_client_n_attend_pas_la_fin_du_scan_des_partages(tmp_path):
+    """Cas réel : à chaque redémarrage du client (port du VPN connu, puis à chaque changement),
+    l'arrêt de l'ancien attendait la fin de la lecture des tags de 3 745 fichiers sur sshfs,
+    sur la boucle d'événements : plus rien ne répondait pendant 2 min 30."""
+    import threading
+    import time
+
+    from soulsick.settings_store import SoulseekSettings
+    from soulsick.slsk.engine import SlskEngine, _Client
+
+    engine = SlskEngine(str(tmp_path))
+    client = _Client(engine._build_settings(SoulseekSettings(username="u", password="p")))
+    await client.shares.start()
+    release = threading.Event()
+    # Le scan en cours : un fichier qui n'en finit pas, et d'autres en attente derrière
+    for _ in range(5):
+        client.shares.executor.submit(release.wait, 10)
+    try:
+        t0 = time.perf_counter()
+        await asyncio.wait_for(client.shares.stop(), timeout=2)
+        assert time.perf_counter() - t0 < 1
+    finally:
+        release.set()

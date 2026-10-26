@@ -164,6 +164,15 @@ class FilteringSharesManager(SharesManager):
         digest = hashlib.sha256(self.salt + offset.to_bytes(2, "big") + path.encode()).digest()
         return "".join(chr(0x61 + b % 26) for b in digest[: self._ALIAS_LENGTH])
 
+    async def stop(self) -> list[asyncio.Task]:
+        """aioslsk waits, on the event loop, for its pool to finish: the whole scan of the
+        shares (minutes over sshfs), during which nothing else answered. The scan is dropped
+        instead: the next client scans again."""
+        if self.executor:
+            self.executor.shutdown(wait=False, cancel_futures=True)
+            self.executor = None
+        return []
+
     async def scan_directory_files(self, shared_directory: SharedDirectory):
         await super().scan_directory_files(shared_directory)
         rules = getattr(self, "rules", {}).get(shared_directory.absolute_path)
