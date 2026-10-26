@@ -11,6 +11,7 @@ import CoverBackdrop from '@/components/CoverBackdrop.vue'
 import EventFeed from '@/components/EventFeed.vue'
 import FormatTag from '@/components/FormatTag.vue'
 import SignalChain from '@/components/SignalChain.vue'
+import SimilarArtists from '@/components/SimilarArtists.vue'
 import StatusBadge from '@/components/StatusBadge.vue'
 import {
   AlertDialog,
@@ -372,6 +373,7 @@ const accent = useCoverAccent(leadCover)
         </div>
 
         <aside class="flex flex-col gap-6">
+          <SimilarArtists :artist-id="id" />
           <section class="flex flex-col">
             <h2 class="text-[14px] font-semibold">
               {{ t('artist.history') }}

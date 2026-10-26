@@ -91,11 +91,34 @@ class Artist(Base):
     secondary_types: Mapped[list[str]] = mapped_column(JSON, default=list)
     added_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     last_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Last time its similar artists were asked to ListenBrainz (Discover)
+    similar_fetched_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     quality_profile: Mapped[QualityProfile | None] = relationship(lazy="selectin")
     release_groups: Mapped[list["ReleaseGroup"]] = relationship(
         back_populates="artist", cascade="all, delete-orphan", lazy="raise", passive_deletes=True
     )
+
+
+class SimilarArtist(Base):
+    """An artist similar to a followed one, as ListenBrainz sees it."""
+
+    __tablename__ = "similar_artist"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    artist_id: Mapped[int] = mapped_column(ForeignKey("artist.id", ondelete="CASCADE"), index=True)
+    mbid: Mapped[str] = mapped_column(String, index=True)
+    name: Mapped[str] = mapped_column(String)
+    comment: Mapped[str] = mapped_column(String, default="")
+    type: Mapped[str | None] = mapped_column(String, nullable=True)
+    score: Mapped[int] = mapped_column(Integer)
+
+
+class DismissedArtist(Base):
+    """A recommendation you are not interested in: never proposed again."""
+
+    __tablename__ = "dismissed_artist"
+    mbid: Mapped[str] = mapped_column(String, primary_key=True)
+    dismissed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
 class ReleaseGroup(Base):

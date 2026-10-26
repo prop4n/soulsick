@@ -3,6 +3,7 @@ import type { Component } from 'vue'
 import {
   ActivityIcon,
   ArrowLeftRightIcon,
+  CompassIcon,
   DiscIcon,
   FolderTreeIcon,
   HardDriveIcon,
@@ -67,6 +68,7 @@ const groups = computed<{ label: string | null, items: NavItem[] }[]>(() => [
     items: [
       { name: 'artists', label: t('nav.artists'), icon: UsersRoundIcon, also: ['artist'] },
       { name: 'library', label: t('nav.albums'), icon: DiscIcon, also: ['album'] },
+      { name: 'discover', label: t('nav.discover'), icon: CompassIcon },
     ],
   },
   {

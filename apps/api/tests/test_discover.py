@@ -1,0 +1,129 @@
+"""Découvrir : des artistes à suivre, d'après les artistes similaires (ListenBrainz) de ceux suivis."""
+
+import httpx
+from test_flow import ctx  # noqa: F401
+
+from soulsick.models import Artist
+
+# Artistes suivis
+VALD = "00000000-0000-0000-0000-00000000000a"
+LAYLOW = "00000000-0000-0000-0000-00000000000b"
+# Artistes similaires
+DAMSO = "10000000-0000-0000-0000-000000000001"
+ORELSAN = "10000000-0000-0000-0000-000000000002"
+PNL = "10000000-0000-0000-0000-000000000003"
+
+SIMILAR = {
+    VALD: [(DAMSO, "Damso", 300), (ORELSAN, "Orelsan", 150), (LAYLOW, "Laylow", 120)],
+    LAYLOW: [(DAMSO, "Damso", 80), (PNL, "PNL", 100)],
+}
+
+
+def listenbrainz(calls: list[str]) -> httpx.AsyncClient:
+    """A fake ListenBrainz: the similar artists of SIMILAR, in its JSON shape."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        mbid = request.url.params["artist_mbids"]
+        calls.append(mbid)
+        return httpx.Response(200, json=[
+            {"artist_mbid": m, "name": n, "score": s, "comment": "", "type": "Person",
+             "gender": None, "reference_mbid": mbid}
+            for m, n, s in SIMILAR.get(mbid, [])
+        ])
+
+    return httpx.AsyncClient(transport=httpx.MockTransport(handler))
+
+
+async def _setup(client, core) -> dict[str, int]:
+    await client.post("/api/auth/setup", json={"username": "admin", "password": "motdepasse"})
+    ids = {}
+    async with core.db.session() as s:
+        for mbid, name in ((VALD, "Vald"), (LAYLOW, "Laylow")):
+            a = Artist(mbid=mbid, name=name, sort_name=name)
+            s.add(a)
+            await s.flush()
+            ids[mbid] = a.id
+        await s.commit()
+    return ids
+
+
+async def test_recommande_les_artistes_communs_en_premier(ctx):  # noqa: F811
+    client, core, engine, env = ctx
+    await _setup(client, core)
+    calls: list[str] = []
+    core.discover.client = listenbrainz(calls)
+
+    r = await client.post("/api/discover/refresh")
+    assert r.status_code == 200
+    assert sorted(calls) == sorted([VALD, LAYLOW])
+
+    recos = (await client.get("/api/discover")).json()["recommendations"]
+    # Damso, similaire aux deux, d'abord ; Laylow, déjà suivi, jamais
+    assert [x["name"] for x in recos] == ["Damso", "PNL", "Orelsan"]
+    assert {b["name"] for b in recos[0]["because"]} == {"Vald", "Laylow"}
+    assert 0 < recos[-1]["score"] < recos[0]["score"] <= 100
+
+
+async def test_un_artiste_ecarte_ne_revient_plus(ctx):  # noqa: F811
+    client, core, engine, env = ctx
+    await _setup(client, core)
+    core.discover.client = listenbrainz([])
+    await client.post("/api/discover/refresh")
+
+    r = await client.post("/api/discover/dismiss", json={"mbid": DAMSO})
+    assert r.status_code == 200
+    names = [x["name"] for x in (await client.get("/api/discover")).json()["recommendations"]]
+    assert "Damso" not in names
+
+
+async def test_rafraichit_seulement_les_artistes_perimes(ctx):  # noqa: F811
+    client, core, engine, env = ctx
+    await _setup(client, core)
+    calls: list[str] = []
+    core.discover.client = listenbrainz(calls)
+
+    assert await core.discover.refresh_stale(limit=10) == 2
+    assert await core.discover.refresh_stale(limit=10) == 0, "déjà à jour : rien à redemander"
+    assert len(calls) == 2
+
+
+async def test_similaires_d_un_artiste(ctx):  # noqa: F811
+    client, core, engine, env = ctx
+    ids = await _setup(client, core)
+    core.discover.client = listenbrainz([])
+    await client.post("/api/discover/refresh")
+
+    similar = (await client.get(f"/api/artists/{ids[VALD]}/similar")).json()
+    assert [x["name"] for x in similar] == ["Damso", "Orelsan", "Laylow"]
+    # Laylow est suivi : lien vers sa page plutôt que « Suivre »
+    assert similar[2]["followed_id"] == ids[LAYLOW]
+    assert similar[0]["followed_id"] is None
+
+
+async def test_un_artiste_en_double_chez_listenbrainz_ne_compte_qu_une_fois(ctx):  # noqa: F811
+    """ListenBrainz renvoie parfois le même artiste deux fois : son meilleur score seulement."""
+    client, core, engine, env = ctx
+    await _setup(client, core)
+    # Additionnés (150 + 160), Orelsan passerait devant PNL
+    SIMILAR[VALD].append((ORELSAN, "Orelsan", 160))
+    try:
+        core.discover.client = listenbrainz([])
+        await client.post("/api/discover/refresh")
+    finally:
+        SIMILAR[VALD].pop()
+    recos = (await client.get("/api/discover")).json()["recommendations"]
+    assert [x["name"] for x in recos] == ["Damso", "PNL", "Orelsan"]
+
+
+async def test_listenbrainz_injoignable_ne_casse_rien(ctx):  # noqa: F811
+    client, core, engine, env = ctx
+    await _setup(client, core)
+
+    def down(request):
+        raise httpx.ConnectError("unreachable")
+
+    core.discover.client = httpx.AsyncClient(transport=httpx.MockTransport(down))
+    assert (await client.post("/api/discover/refresh")).status_code == 200
+    body = (await client.get("/api/discover")).json()
+    assert body["recommendations"] == []
+    assert body["pending"] == 2, "les artistes seront redemandés au prochain passage"

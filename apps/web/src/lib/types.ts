@@ -622,3 +622,31 @@ export interface PeerProfile {
   interests?: string[]
   hated_interests?: string[]
 }
+
+// Discover: artists similar to the followed ones (ListenBrainz)
+export interface Recommendation {
+  mbid: string
+  name: string
+  comment: string
+  type: string | null
+  /** 1–100, relative to the best recommendation */
+  score: number
+  /** Followed artists it is similar to, the closest first */
+  because: { id: number, name: string }[]
+}
+
+export interface DiscoverResponse {
+  recommendations: Recommendation[]
+  /** Followed artists whose similar artists were not fetched yet */
+  pending: number
+  followed: number
+}
+
+export interface SimilarArtist {
+  mbid: string
+  name: string
+  comment: string
+  type: string | null
+  /** Set when it is already followed */
+  followed_id: number | null
+}

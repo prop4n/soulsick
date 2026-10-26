@@ -11,7 +11,7 @@ from fastapi.staticfiles import StaticFiles
 
 from . import __version__
 from . import logbuffer
-from .api import routes_auth, routes_catalog, routes_chat, routes_network, routes_system
+from .api import routes_auth, routes_catalog, routes_chat, routes_discover, routes_network, routes_system
 from .auth import COOKIE
 from .config import Env, get_env
 from .core import Core
@@ -40,7 +40,7 @@ def create_app(env: Env | None = None, core: Core | None = None) -> FastAPI:
             await c.stop()
 
     app = FastAPI(title="Soulsick", version=__version__, lifespan=lifespan)
-    for r in (routes_auth, routes_system, routes_catalog, routes_network, routes_chat):
+    for r in (routes_auth, routes_system, routes_catalog, routes_discover, routes_network, routes_chat):
         app.include_router(r.router)
 
     @app.websocket("/api/ws")

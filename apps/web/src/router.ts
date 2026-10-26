@@ -15,6 +15,7 @@ export const router = createRouter({
         { path: 'artists/:id', name: 'artist', component: () => import('@/pages/ArtistPage.vue'), meta: { title: 'nav.artist' } },
         { path: 'albums/:id', name: 'album', component: () => import('@/pages/AlbumPage.vue'), meta: { title: 'nav.album' } },
         { path: 'library', name: 'library', component: () => import('@/pages/LibraryPage.vue'), meta: { title: 'nav.library' } },
+        { path: 'discover', name: 'discover', component: () => import('@/pages/DiscoverPage.vue'), meta: { title: 'nav.discover' } },
         { path: 'search', name: 'search', component: () => import('@/pages/SearchPage.vue'), meta: { title: 'nav.search' } },
         { path: 'transfers', name: 'transfers', component: () => import('@/pages/TransfersPage.vue'), meta: { title: 'nav.transfers' } },
         { path: 'browse/:username?', name: 'browse', component: () => import('@/pages/BrowsePage.vue'), meta: { title: 'nav.browse' } },

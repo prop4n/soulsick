@@ -22,6 +22,8 @@ import { RELEASE_TYPES, releaseTypeLabel, SECONDARY_TYPES } from '@/lib/status'
 import { cn } from '@/lib/utils'
 
 const open = defineModel<boolean>('open', { default: false })
+// Artist already chosen (Discover, similar artists): straight to "how to follow it"
+const props = defineProps<{ preset?: { mbid: string, name: string } | null }>()
 const { t } = useI18n()
 const router = useRouter()
 const qc = useQueryClient()
@@ -50,6 +52,20 @@ const { data: results, isFetching } = useQuery({
 })
 
 watch(open, (o) => {
+  if (o && props.preset) {
+    picked.value = {
+      mbid: props.preset.mbid,
+      name: props.preset.name,
+      sort_name: props.preset.name,
+      disambiguation: '',
+      country: null,
+      type: null,
+      score: 100,
+      begin: null,
+      tags: [],
+      in_library: false,
+    }
+  }
   if (!o) {
     setTimeout(() => {
       q.value = ''

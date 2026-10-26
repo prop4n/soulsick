@@ -18,6 +18,7 @@ from .musicbrainz import MusicBrainz
 from .services.catalog import CatalogService
 from .services.chat import ChatService
 from .services.coverage import CoverageService
+from .services.discover import DiscoverService
 from .services.existing import ExistingImportService
 from .services.hunter import HunterService
 from .services.importer import ImportService
@@ -60,6 +61,7 @@ class Core:
         self.guard = LibraryGuard(self)
         self.peers = PeerService(self)
         self.qobuz = QobuzService(self)
+        self.discover = DiscoverService(self)
         self._tasks: list[asyncio.Task] = []
 
         self.engine.on_transfer = self.transfers.on_update
@@ -105,6 +107,7 @@ class Core:
             self._tasks.append(asyncio.create_task(self.hunter.loop()))
             self._tasks.append(asyncio.create_task(self._sync_loop()))
             self._tasks.append(asyncio.create_task(self._queue_loop()))
+            self._tasks.append(asyncio.create_task(self.discover.loop()))
             if self.env.forwarded_port_file:
                 self._tasks.append(asyncio.create_task(self._port_loop()))
         self._tasks.append(asyncio.create_task(self.library.scan()))
@@ -317,4 +320,5 @@ class Core:
         await asyncio.gather(*self._tasks, return_exceptions=True)
         await self.engine.stop()
         await self.mb.close()
+        await self.discover.client.aclose()
         await self.db.dispose()
