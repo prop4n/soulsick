@@ -554,7 +554,11 @@ class HunterService:
                 ))
             if cancelled:
                 parts.append(M("reason.cancelled_by_you", n=len(cancelled)))
-            await self._fail_candidate(candidate_id, parts[0] if len(parts) == 1 else M("join", a=parts[0], b=parts[1]))
+            # Every file already reached an end: what is queued now was retried since, it stays
+            await self._fail_candidate(
+                candidate_id, parts[0] if len(parts) == 1 else M("join", a=parts[0], b=parts[1]),
+                abandon_pending=False,
+            )
             return
 
         # Extra files still in flight are dropped
@@ -842,7 +846,11 @@ class HunterService:
         )
         return await self.complete_from(to, track_ids)
 
-    async def _fail_candidate(self, candidate_id: int, reason: Msg, try_next: bool = True) -> None:
+    async def _fail_candidate(
+        self, candidate_id: int, reason: Msg, try_next: bool = True, abandon_pending: bool = True,
+    ) -> None:
+        """`abandon_pending` : its files still queued are marked aborted (nothing will download
+        them). Not when every file already reached an end: what is queued then was retried since."""
         async with self.core.db.session() as s:
             c = await s.get(Candidate, candidate_id)
             if not c:
@@ -858,6 +866,14 @@ class HunterService:
                     Transfer.candidate_id == candidate_id, Transfer.state.not_in(list(TERMINAL))
                 ))).scalars()
             )
+            # Its unfinished files go with it: left "queued", nothing would ever download them,
+            # and they still counted as active
+            if abandon_pending:
+                for t in pending:
+                    t.state = TransferState.ABORTED
+                    t.error = M("transfer.source_failed").text
+                    t.completed_at = datetime.now(UTC)
+            targets = [(t.id, t.username, t.remote_path) for t in pending]
             nxt = (
                 await s.execute(
                     select(Candidate)
@@ -871,8 +887,16 @@ class HunterService:
             next_id = nxt.id if nxt else None
             next_label = f"{nxt.username} ({nxt.score}/100)" if nxt else None
 
-        for t in pending:
-            await self.core.backend(t.remote_path).abort(t.username, t.remote_path, "download")
+        for tid, username, path in targets:
+            if not abandon_pending:
+                await self.core.backend(path).abort(username, path, "download")
+                continue
+            self.core.transfers.forget(tid)
+            # Tolerates an engine that is down: often why the source failed in the first place
+            await self.core.transfers.stop_on_engine(username, path)
+            self.core.hub.publish(
+                "transfer", {"id": tid, "state": TransferState.ABORTED, "speed": 0, "stuck": False}
+            )
 
         await self.core.journal.emit(
             "download.failed", M("download.failed", label=label, reason=reason), level="warning",

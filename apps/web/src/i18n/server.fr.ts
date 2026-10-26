@@ -191,6 +191,7 @@ const serverFr: Record<string, string> = {
   'engine.connect_failed': 'Connexion impossible : {error}',
   'engine.offline': 'Non connecté au réseau Soulseek',
   'transfer.restart_interrupted': 'Interrompu par un redémarrage',
+  'transfer.source_failed': 'Source abandonnée : l’album est recherché à nouveau',
 
   'share.hidden_file': 'fichier caché',
   'share.excluded_pattern': 'exclu par le motif « {pattern} »',

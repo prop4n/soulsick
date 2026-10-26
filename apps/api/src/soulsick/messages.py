@@ -206,6 +206,7 @@ EN: dict[str, str] = {
     "engine.connect_failed": "Connection failed: {error}",
     "engine.offline": "Not connected to the Soulseek network",
     "transfer.restart_interrupted": "Interrupted by a restart",
+    "transfer.source_failed": "Source dropped: the album is looked for again",
 
     # --- share rules
     "share.hidden_file": "hidden file",

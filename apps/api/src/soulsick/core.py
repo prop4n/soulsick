@@ -153,6 +153,19 @@ class Core:
                 .where(Transfer.direction == "upload", Transfer.state.not_in(["complete", "failed", "aborted"]))
                 .values(state=TransferState.ABORTED, error=M("transfer.restart_interrupted").text)
             )
+            # Downloads left "queued" by a source that failed (older versions): nothing would ever
+            # download them, and they still counted as active
+            await s.execute(
+                update(Transfer)
+                .where(
+                    Transfer.direction == "download",
+                    Transfer.state.not_in(["complete", "failed", "aborted"]),
+                    Transfer.candidate_id.in_(
+                        select(Candidate.id).where(Candidate.status == CandidateStatus.FAILED)
+                    ),
+                )
+                .values(state=TransferState.ABORTED, error=M("transfer.source_failed").text)
+            )
             await s.commit()
         for cid in reimport:
             self._tasks.append(asyncio.create_task(self.importer.import_candidate(cid)))
