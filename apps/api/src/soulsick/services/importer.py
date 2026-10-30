@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING
 
 from sqlalchemy import select
 
+from .. import lyrics
 from ..audiotags import TagSet, read_meta, write_tags
 from ..matching import Assignment, FileRef, MatchResult, TrackRef, match_files
 from ..messages import M, Msg, UserError, set_reason
@@ -110,6 +111,7 @@ async def place_track(
                 raise UserError("error.destination_taken", path=dest)
         os.makedirs(os.path.dirname(dest), exist_ok=True)
         await asyncio.to_thread(shutil.move, src, dest)
+        await asyncio.to_thread(lyrics.follow, src, dest)
     return dest
 
 
@@ -496,14 +498,14 @@ class ImportService:
 
         # Older files of this album go only when the plan brings a new version of the same track;
         # tracks the plan doesn't cover (already shelved, e.g. by hand) stay
-        placed = {tracks[i["track_id"]].recording_mbid for i in used}
+        placed = {tracks[i["track_id"]].recording_mbid: m["to"] for i, m in zip(used, moved, strict=True)}
         removed_old = []
         kept = []
         for f in old:
             if f.path in new_paths or not os.path.exists(f.path):
                 continue
             if f.recording_mbid in placed:
-                os.remove(f.path)
+                lyrics.drop_replaced(f.path, placed[f.recording_mbid])  # its lyrics stay, on the new file
                 removed_old.append(f.path)
             else:
                 kept.append(f.path)
@@ -517,6 +519,7 @@ class ImportService:
 
         # Index files BEFORE announcing the album as shelved (otherwise: shelved with 0 files)
         await self.core.library.scan()
+        self.core.lyrics.after_import(rg.mbid)  # lyrics of the tracks that came without
 
         metas = [read_meta(p) for p in [*new_paths, *kept]]
         fmt = worst_format([m.format for m in metas], [])

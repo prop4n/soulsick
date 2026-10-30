@@ -24,6 +24,7 @@ from .services.hunter import HunterService
 from .services.importer import ImportService
 from .services.libguard import LibraryGuard
 from .services.library import LibraryService
+from .services.lyrics_fetch import LyricsFetchService
 from .services.navidrome import NavidromeService
 from .services.peers import PeerService
 from .services.qobuz import QobuzService, is_qobuz
@@ -49,6 +50,7 @@ class Core:
         self.engine = engine or SlskEngine(str(env.downloads_dir))
         self.catalog = CatalogService(self)
         self.library = LibraryService(self)
+        self.lyrics = LyricsFetchService(self)
         self.hunter = HunterService(self)
         self.importer = ImportService(self)
         self.transfers = TransferService(self)

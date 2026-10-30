@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING
 
 from sqlalchemy import func, or_, select
 
+from ..lyrics import DOWNLOADED_LYRICS
 from ..matching import TrackRef
 from ..messages import M, Msg, UserError, set_reason
 from ..models import (
@@ -28,7 +29,7 @@ from ..models import (
     Transfer,
     TransferState,
 )
-from ..quality import FORMAT_LABELS, is_better_or_equal
+from ..quality import FORMAT_LABELS, extension_of, is_better_or_equal
 from ..scoring import PeerResult, ReleaseOption, ScoredCandidate, rank_candidates, unique_tracklists
 from ..slsk.engine import EngineUnavailable
 from .coverage import ACTIVE
@@ -442,7 +443,14 @@ class HunterService:
                         received[t.remote_path] = t
             c.status = CandidateStatus.CHOSEN
             c.download_dir = dest
-            files = [f for f in c.files if not f.get("extra") or cfg.download_covers]
+            # Lyrics always (small, and Navidrome reads them); covers and the rest only if asked.
+            # Lyrics are asked first: the album is imported as soon as its audio is there, and
+            # peers send in the order asked
+            is_lyrics = [extension_of(f["filename"]) in DOWNLOADED_LYRICS for f in c.files]
+            files = [
+                f for f, lyr in sorted(zip(c.files, is_lyrics, strict=True), key=lambda x: not x[1])
+                if lyr or not f.get("extra") or cfg.download_covers
+            ]
             transfers = []
             for f in files:
                 done = received.get(f["filename"])
