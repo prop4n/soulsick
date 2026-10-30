@@ -31,6 +31,7 @@ from ..models import (
 from ..quality import FORMAT_LABELS, is_better_or_equal
 from ..scoring import PeerResult, ReleaseOption, ScoredCandidate, rank_candidates, unique_tracklists
 from ..slsk.engine import EngineUnavailable
+from .coverage import ACTIVE
 from .qobuz import PREFIX as QOBUZ_PREFIX
 from .qobuz import QobuzError
 
@@ -582,6 +583,40 @@ class HunterService:
             release_group_id=c.release_group_id, candidate_id=candidate_id,
         )
         asyncio.create_task(self.core.importer.import_candidate(candidate_id, automatic=True))
+
+    async def take_track(self, rg_id: int, track_id: int, candidate_id: int) -> None:
+        """« Prendre chez… »: this track of the album, from this peer, now. Where it is being
+        fetched (in progress, queued, paused) is cancelled first; nothing changes if the peer
+        doesn't have it. A track already received stays as it is."""
+        cover = await self.core.coverage.album(rg_id, offers=None)
+        track = next((t for t in cover["tracks"] if t["track_id"] == track_id), None)
+        if track is None:
+            raise UserError("error.no_tracks_for_peer")
+        if track["state"] in ("received", "in_library"):
+            raise UserError("error.track_already_received")
+        if not any(h["candidate_id"] == candidate_id for h in track["holders"]):
+            raise UserError("error.no_tracks_for_peer")
+        async with self.core.db.session() as s:
+            to = await s.get(Candidate, candidate_id)
+            assert to
+            reason = M("reason.taken_elsewhere", peer=to.username).text
+            fetching = [x["transfer_id"] for x in track["sources"] if x["state"] in ACTIVE]
+            rows = list((await s.execute(select(Transfer).where(Transfer.id.in_(fetching))))) if fetching else []
+            olds = set()
+            for (t,) in rows:
+                t.state, t.error, t.completed_at = TransferState.ABORTED, reason, datetime.now(UTC)
+                if t.candidate_id:
+                    olds.add(t.candidate_id)
+            await s.commit()
+            targets = [(t.id, t.username, t.remote_path) for (t,) in rows]
+        for tid, username, path in targets:
+            self.core.transfers.forget(tid)
+            await self.core.transfers.stop_on_engine(username, path)
+            self.core.hub.publish("transfer", {"id": tid, "state": TransferState.ABORTED, "speed": 0, "stuck": False})
+        await self.complete_from(candidate_id, [track_id])
+        # The previous sources may have nothing left in flight now: they are settled
+        for cid in olds:
+            asyncio.create_task(self.on_transfer_terminal(cid))
 
     async def _mark_failed(self, candidate_id: int, reason: Msg) -> None:
         """The source is done, with failures: it stays a source for what it brought."""
