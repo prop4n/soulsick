@@ -231,6 +231,14 @@ export interface LibraryFile {
   release_group_mbid: string | null
   release_mbid: string | null
   recording_mbid: string | null
+  lyrics: FileLyrics | null
+}
+
+/** Lyrics Navidrome plays for a file: the file next to it first, else those embedded */
+export interface FileLyrics {
+  kind: 'synced' | 'plain'
+  source: 'file' | 'embedded'
+  ext: string | null
 }
 
 export type TransferStateName = 'queued' | 'initializing' | 'transferring' | 'paused' | 'complete' | 'failed' | 'aborted'

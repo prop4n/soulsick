@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { Coverage, CoverageSource, Release } from '@/lib/types'
+import type { Coverage, CoverageSource, FileLyrics, Release } from '@/lib/types'
 import { isPartial } from '@/lib/types'
 import { ArrowLeftIcon, ExternalLinkIcon, FolderInputIcon, RadarIcon, XIcon } from '@lucide/vue'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/vue-query'
@@ -15,6 +15,7 @@ import CoverBackdrop from '@/components/CoverBackdrop.vue'
 import EventFeed from '@/components/EventFeed.vue'
 import FormatTag from '@/components/FormatTag.vue'
 import ImportReview from '@/components/ImportReview.vue'
+import LyricsTag from '@/components/LyricsTag.vue'
 import SignalChain from '@/components/SignalChain.vue'
 import StatusBadge from '@/components/StatusBadge.vue'
 import TrackCoverage from '@/components/TrackCoverage.vue'
@@ -73,6 +74,14 @@ const reviewCandidate = computed(() =>
     : undefined,
 )
 const present = computed(() => new Set((album.value?.files ?? []).map(f => f.recording_mbid).filter(Boolean)))
+/** Lyrics of each shelved track (issue #1: which tracks have their .lrc) */
+const lyricsByRecording = computed(() => new Map<string, FileLyrics | null>(
+  (album.value?.files ?? []).filter(f => f.recording_mbid).map(f => [f.recording_mbid!, f.lyrics]),
+))
+const lyricsStats = computed(() => {
+  const all = [...lyricsByRecording.value.values()]
+  return { total: all.length, with: all.filter(Boolean).length, synced: all.filter(l => l?.kind === 'synced').length }
+})
 const hasSources = computed(() => !!coverage.value?.tracks.some(x => x.sources.length))
 /** Per-track coverage, only meaningful for the edition the hunt targets */
 const coverageByTrack = computed(() =>
@@ -296,6 +305,10 @@ const dismiss = useMutation({
 
           <div class="flex flex-wrap items-center gap-x-5 gap-y-1 text-[12px] text-faint">
             <span v-if="album.imported_format" class="flex items-center gap-1.5">{{ t('album.presentAs') }} <FormatTag :format="album.imported_format" /></span>
+            <span v-if="lyricsStats.total" class="flex items-center gap-1.5">
+              {{ t('lyrics.count', { n: lyricsStats.with, total: lyricsStats.total }) }}<template v-if="lyricsStats.synced">
+                · {{ t('lyrics.countSynced', lyricsStats.synced) }}</template>
+            </span>
             <span v-if="isPartial(album)" class="text-warning">{{ t('album.partial', { n: album.present_tracks, total: album.total_tracks }) }}</span>
             <span v-if="album.imported_path" class="min-w-0 truncate font-mono" :title="album.imported_path">{{ album.imported_path }}</span>
             <span>{{ t('album.lastSearch', { when: ago(album.last_searched_at) }) }}</span>
@@ -367,11 +380,15 @@ const dismiss = useMutation({
             <div
               v-for="tr in release.tracks"
               :key="tr.id"
-              class="grid grid-cols-[3rem_minmax(0,1fr)_auto_auto] items-center gap-3 border-b px-4 py-2 text-[13px] last:border-b-0"
+              class="grid grid-cols-[3rem_minmax(0,1fr)_auto_auto_auto] items-center gap-3 border-b px-4 py-2 text-[13px] last:border-b-0"
             >
               <span class="font-mono text-[11.5px] text-faint tnum">{{ release.disc_count > 1 ? `${tr.disc}-` : '' }}{{ String(tr.position).padStart(2, '0') }}</span>
               <span class="truncate">{{ tr.title }}<span v-if="tr.artist_credit && tr.artist_credit !== album.artist?.name" class="text-faint"> · {{ tr.artist_credit }}</span></span>
               <span class="font-mono text-[11.5px] text-muted-foreground tnum">{{ ms(tr.length_ms) }}</span>
+              <!-- Its lyrics, once shelved -->
+              <span class="flex w-14 justify-end">
+                <LyricsTag v-if="lyricsByRecording.has(tr.recording_mbid)" :lyrics="lyricsByRecording.get(tr.recording_mbid)" />
+              </span>
               <!-- Where this track comes from -->
               <span class="flex min-w-24 items-center justify-end gap-1.5">
                 <template v-if="coverageByTrack?.get(tr.id)?.sources.length">

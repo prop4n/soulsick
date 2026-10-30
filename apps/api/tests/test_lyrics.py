@@ -1,4 +1,5 @@
-"""Paroles : les .lrc suivent leur piste, les paroles intégrées survivent au tagage (issue #1)."""
+"""Paroles : les .lrc suivent leur piste, les paroles intégrées survivent au tagage, et on voit
+par piste ce qu'il y a (issue #1)."""
 
 from fakes import TRACKS, peer_with_album, tiny_flac
 from mutagen.flac import FLAC
@@ -129,6 +130,21 @@ async def test_rangement_de_l_existant_avec_paroles(ctx):  # noqa: F811
     assert (dest / "02 - In Bloom.txt").read_text() == "Load up on guns", "le .txt prend le nom de sa piste"
     assert not raw.exists(), "plus rien ne retient l'ancien dossier"
     assert read_meta(dest / "03 - Come as You Are.flac").lyrics == "plain", "survivent au tagage"
+
+    album = (await client.get(f"/api/albums/{r.json()['release_group_id']}")).json()
+    by_title = {f["tag_title"]: f["lyrics"] for f in album["files"]}
+    assert by_title == {
+        "Smells Like Teen Spirit": {"kind": "synced", "source": "file", "ext": "lrc"},
+        "In Bloom": {"kind": "plain", "source": "file", "ext": "txt"},
+        "Come as You Are": {"kind": "plain", "source": "embedded", "ext": None},
+    }
+
+    # Un .lrc ajouté à la main se voit au scan suivant, sans toucher à la piste
+    (dest / "03 - Come as You Are.lrc").write_text(SYNCED)
+    await core.library.scan()
+    album = (await client.get(f"/api/albums/{r.json()['release_group_id']}")).json()
+    come = next(f for f in album["files"] if f["tag_title"] == "Come as You Are")
+    assert come["lyrics"] == {"kind": "synced", "source": "file", "ext": "lrc"}
 
 
 async def test_la_chasse_telecharge_les_paroles_en_premier(ctx):  # noqa: F811

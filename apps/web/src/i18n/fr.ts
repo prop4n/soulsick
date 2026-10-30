@@ -267,6 +267,17 @@ const fr: Messages = {
     noTransfers: 'Aucun transfert pour cet album.',
   },
 
+  lyrics: {
+    synced: 'LRC',
+    plain: 'texte',
+    syncedHint: 'Paroles synchronisées',
+    plainHint: 'Paroles sans horodatage',
+    noneHint: 'Pas de paroles',
+    fromFile: 'fichier .{ext}',
+    embedded: 'intégrées au fichier',
+    count: 'Paroles {n}/{total}',
+    countSynced: 'dont {n} synchronisée | dont {n} synchronisées',
+  },
   coverage: {
     title: 'Pistes reçues',
     downloading: '{n} en cours',

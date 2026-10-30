@@ -268,6 +268,17 @@ const en = {
     noTransfers: 'No transfer for this album.',
   },
 
+  lyrics: {
+    synced: 'LRC',
+    plain: 'text',
+    syncedHint: 'Synced lyrics',
+    plainHint: 'Lyrics without timestamps',
+    noneHint: 'No lyrics',
+    fromFile: '.{ext} file',
+    embedded: 'embedded in the file',
+    count: 'Lyrics {n}/{total}',
+    countSynced: '{n} synced',
+  },
   coverage: {
     title: 'Tracks received',
     downloading: '{n} downloading',
