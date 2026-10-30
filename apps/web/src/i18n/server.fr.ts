@@ -81,6 +81,7 @@ const serverFr: Record<string, string> = {
   'download.resumed_candidate': 'Reprise du téléchargement depuis {peer} : {n} fichier redemandé, {done} déjà reçus conservés | Reprise du téléchargement depuis {peer} : {n} fichiers redemandés, {done} déjà reçus conservés',
   'download.failed': '{label} : candidat abandonné — {reason}',
   'download.stuck': '{name} de {peer} semble bloqué : {why}',
+  'download.relayed': 'Piste(s) refusée(s) demandée(s) à {peer} à la place ({n})',
   'download.switched': '{label} : passage de {old} à {new} ({n} piste pas encore reçue) | {label} : passage de {old} à {new} ({n} pistes pas encore reçues)',
   'download.switched_search': '{label} : source {peer} abandonnée, recherche d’un autre pair',
   'stuck.no_progress': 'aucune donnée reçue depuis {minutes} min',

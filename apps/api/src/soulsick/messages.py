@@ -96,6 +96,7 @@ EN: dict[str, str] = {
     "download.failed": "{label}: candidate dropped — {reason}",
     "download.abandoned": "{label}: source {peer} dropped by you ({n} unfinished file cancelled, what arrived is kept) | {label}: source {peer} dropped by you ({n} unfinished files cancelled, what arrived is kept)",
     "download.stuck": "{name} from {peer} looks stuck: {why}",
+    "download.relayed": "Refused track(s) asked to {peer} instead ({n})",
     "download.switched": "{label}: switching from {old} to {new} ({n} track not received yet) | {label}: switching from {old} to {new} ({n} tracks not received yet)",
     "download.switched_search": "{label}: source {peer} dropped, searching for another peer",
     "stuck.no_progress": "no data received for {minutes} min",

@@ -505,7 +505,9 @@ class HunterService:
         """Re-evaluates a candidate when one of its transfers reaches a final state.
 
         - refused file: automatic retry (growing delays), on the same row;
-        - attempts exhausted: candidate dropped (possible fallback);
+        - attempts exhausted: what arrived stays, the refused tracks are asked to other peers
+          (nothing arrived at all: the album goes to the next candidate, as before);
+        - cancelled files don't fail the source: it is done with the rest;
         - candidate already dropped but every file arrived after all: import anyway.
         """
         async with self.core.db.session() as s:
@@ -517,12 +519,16 @@ class HunterService:
         audio = [t for t in ts if not _is_extra(t.remote_path)]
         if not audio or any(t.state not in TERMINAL for t in audio):
             return
-        failed = [t for t in audio if t.state != TransferState.COMPLETE]
+        # Cancelled files (by you, or a track taken from another peer) are not a failure of
+        # the source; only files the peer refused are
+        refused = [t for t in audio if t.state == TransferState.FAILED]
+        cancelled = [t for t in audio if t.state == TransferState.ABORTED]
 
-        if failed:
-            if status != CandidateStatus.CHOSEN:
-                return
-            retryable = [t for t in failed if t.state == TransferState.FAILED and (t.attempts or 1) < self.max_attempts]
+        if status == CandidateStatus.FAILED:
+            if refused or cancelled:
+                return  # dropped, with what it brought: the album rule takes it from there
+        elif refused:
+            retryable = [t for t in refused if (t.attempts or 1) < self.max_attempts]
             pending = [t for t in retryable if t.id not in self._retrying]
             if retryable:
                 if pending:
@@ -543,22 +549,21 @@ class HunterService:
                     )
                     asyncio.create_task(self._retry_later([t.id for t in pending], delay))
                 return
-            cancelled = [t for t in failed if t.state == TransferState.ABORTED]
-            refused = [t for t in failed if t.state != TransferState.ABORTED]
-            parts: list[Msg] = []
-            if refused:
-                reasons = Counter(t.error or t.state for t in refused)
-                parts.append(M(
-                    "reason.refused_after", n=len(refused), max=self.max_attempts,
-                    reasons=", ".join(f"{k} ×{v}" for k, v in reasons.items()),
-                ))
-            if cancelled:
-                parts.append(M("reason.cancelled_by_you", n=len(cancelled)))
-            # Every file already reached an end: what is queued now was retried since, it stays
-            await self._fail_candidate(
-                candidate_id, parts[0] if len(parts) == 1 else M("join", a=parts[0], b=parts[1]),
-                abandon_pending=False,
+            reasons = Counter(t.error or t.state for t in refused)
+            reason = M(
+                "reason.refused_after", n=len(refused), max=self.max_attempts,
+                reasons=", ".join(f"{k} ×{v}" for k, v in reasons.items()),
             )
+            if not any(t.state == TransferState.COMPLETE for t in audio):
+                # Nothing came from this peer: the album goes to the next one, as always
+                await self._fail_candidate(candidate_id, reason, abandon_pending=False)
+                return
+            # What arrived stays; the refused tracks are asked to other peers that have them
+            await self._mark_failed(candidate_id, reason)
+            relayed = await self._relay_refused(c.release_group_id, candidate_id)
+            if not relayed:
+                # Nobody else has them: the import says what is missing (« à compléter »)
+                asyncio.create_task(self.core.importer.import_candidate(candidate_id, automatic=True))
             return
 
         # Extra files still in flight are dropped
@@ -577,6 +582,56 @@ class HunterService:
             release_group_id=c.release_group_id, candidate_id=candidate_id,
         )
         asyncio.create_task(self.core.importer.import_candidate(candidate_id, automatic=True))
+
+    async def _mark_failed(self, candidate_id: int, reason: Msg) -> None:
+        """The source is done, with failures: it stays a source for what it brought."""
+        async with self.core.db.session() as s:
+            c = await s.get(Candidate, candidate_id)
+            if c:
+                c.status = CandidateStatus.FAILED
+                set_reason(c, "reject_reason", reason)
+                await s.commit()
+
+    async def _relay_refused(self, rg_id: int, from_id: int) -> list[int]:
+        """The album's missing tracks, asked to the other peers that have them: best first (same
+        format, then whole coverage, free slot, score), never a peer where that very file already
+        failed or was cancelled. Returns the tracks relayed."""
+        cover = await self.core.coverage.album(rg_id, offers=None)
+        want = {t["track_id"] for t in cover["tracks"] if t["state"] == "missing"}
+        if not want:
+            return []
+        async with self.core.db.session() as s:
+            src = await s.get(Candidate, from_id)
+            fmt = src.format if src else None
+            dead = {
+                (cid, path) for cid, path in await s.execute(
+                    select(Transfer.candidate_id, Transfer.remote_path).where(
+                        Transfer.release_group_id == rg_id,
+                        Transfer.state.in_([TransferState.FAILED, TransferState.ABORTED]),
+                    )
+                )
+            }
+        fillers = [f for f in cover["fillers"] if f["status"] != CandidateStatus.REJECTED]
+        fillers.sort(key=lambda f: f["format"] != fmt)  # stable: keeps coverage's order otherwise
+        relayed: list[int] = []
+        for f in fillers:
+            tids = [
+                x["track_id"] for x in f["tracks"]
+                if x["track_id"] in want and (f["candidate_id"], x["filename"]) not in dead
+            ]
+            if not tids:
+                continue
+            await self.complete_from(f["candidate_id"], tids)
+            await self.core.journal.emit(
+                "download.relayed",
+                M("download.relayed", n=len(tids), peer=f["username"]),
+                release_group_id=rg_id, candidate_id=f["candidate_id"],
+            )
+            want -= set(tids)
+            relayed += tids
+            if not want:
+                break
+        return relayed
 
     async def _retry_later(self, transfer_ids: list[int], delay: float) -> None:
         try:
