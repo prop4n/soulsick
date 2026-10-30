@@ -27,7 +27,6 @@ from .services.library import LibraryService
 from .services.lyrics_fetch import LyricsFetchService
 from .services.navidrome import NavidromeService
 from .services.peers import PeerService
-from .services.qobuz import QobuzService, is_qobuz
 from .services.shares import ShareService
 from .services.storage import StorageService
 from .services.transfers import TransferService
@@ -62,7 +61,6 @@ class Core:
         self.storage = StorageService(self)
         self.guard = LibraryGuard(self)
         self.peers = PeerService(self)
-        self.qobuz = QobuzService(self)
         self.discover = DiscoverService(self)
         self._tasks: list[asyncio.Task] = []
 
@@ -80,10 +78,6 @@ class Core:
             path.write_bytes(os.urandom(32))
         return path.read_bytes()
 
-    def backend(self, remote_path: str | None):
-        """Who downloads this file: Qobuz for its own paths, the Soulseek engine for the rest."""
-        return self.qobuz if is_qobuz(remote_path) else self.engine
-
     async def _engine_info(self, kind: str, message: Msg, data: dict) -> None:
         level = data.pop("level", "info")
         await self.journal.emit(kind, message, level=level, data=data)
@@ -99,6 +93,7 @@ class Core:
             await s.commit()
         await self.catalog.ensure_default_profiles()
         await convert_legacy_reasons(self.db)
+        await self._drop_retired_source()
         await self._recover()
         await self.transfers.load_cancelled()
         await self.journal.emit("app.started", M("app.started"))
@@ -278,6 +273,27 @@ class Core:
         # Restart unfinished downloads (aioslsk keeps no state between runs)
         self._tasks.append(asyncio.create_task(self._resume_downloads()))
 
+    async def _drop_retired_source(self) -> None:
+        """Qobuz was removed as a download source: what it was still downloading is cancelled,
+        its albums still proposed are set aside (they can't be downloaded any more), and its
+        settings (the account token) are dropped from the database."""
+        retired = "qobuz:"
+        raw = await self.settings.get_raw(self.settings.KEY)
+        if raw and "qobuz" in raw:
+            await self.settings.save(await self.settings.get())
+        async with self.db.session() as s:
+            await s.execute(
+                update(Transfer)
+                .where(Transfer.remote_path.startswith(retired), Transfer.state.not_in(["complete", "failed", "aborted"]))
+                .values(state=TransferState.ABORTED, error=M("transfer.source_removed").text)
+            )
+            await s.execute(
+                update(Candidate)
+                .where(Candidate.directory.startswith(retired), Candidate.status.in_([CandidateStatus.PROPOSED, CandidateStatus.CHOSEN]))
+                .values(status=CandidateStatus.REJECTED)
+            )
+            await s.commit()
+
     async def _resume_downloads(self) -> None:
         async with self.db.session() as s:
             pending = list(
@@ -292,18 +308,13 @@ class Core:
             )
         if not pending:
             return
-        # Qobuz needs no Soulseek connection: its downloads restart right away
-        qobuz = [t for t in pending if is_qobuz(t.remote_path)]
-        soulseek = [t for t in pending if not is_qobuz(t.remote_path)]
-        await self._restart(qobuz)
-        if soulseek:
-            for _ in range(60):
-                if self.engine.logged_in:
-                    break
-                await asyncio.sleep(2)
-            else:
-                return
-            await self._restart(soulseek)
+        for _ in range(60):
+            if self.engine.logged_in:
+                break
+            await asyncio.sleep(2)
+        else:
+            return
+        await self._restart(pending)
         await self.journal.emit("download.resumed", M("download.resumed", n=len(pending)))
 
     async def _restart(self, transfers: list[Transfer]) -> None:
@@ -314,7 +325,7 @@ class Core:
                 continue
             self.transfers.register("download", t.username, t.remote_path, t.id)
             try:
-                await self.backend(t.remote_path).download(t.username, t.remote_path, t.local_path.rsplit("/", 1)[0])
+                await self.engine.download(t.username, t.remote_path, t.local_path.rsplit("/", 1)[0])
             except Exception as e:
                 log.warning("resume %s: %s", t.remote_path, e)
 

@@ -26,7 +26,6 @@ from ..models import (
     of_artist,
 )
 from ..musicbrainz import MusicBrainzError
-from ..services.qobuz import QobuzError
 from ..slsk.engine import EngineUnavailable
 from ..services.transfers import transfer_to_dict
 from .deps import get_core, require_user
@@ -491,20 +490,11 @@ async def fetch_album_lyrics(rid: int, core: Core = Depends(get_core)) -> dict:
     return await core.lyrics.fetch_album(rg.mbid, by_user=True)
 
 
-class RedownloadIn(BaseModel):
-    source: Literal["qobuz", "soulseek"] = "qobuz"
-
-
 @router.post("/albums/{rid}/redownload")
-async def redownload_album(rid: int, body: RedownloadIn, core: Core = Depends(get_core)) -> dict:
-    """Download this album again from a source; the shelved files are replaced once it's imported."""
-    if body.source == "qobuz":
-        try:
-            await core.qobuz.app()  # no token, refused token…: said now, before dropping anything
-        except QobuzError as e:
-            raise http_error(400, e.msg) from e
+async def redownload_album(rid: int, core: Core = Depends(get_core)) -> dict:
+    """Download this album again; the shelved files are replaced once it's imported."""
     try:
-        n = await core.hunter.redownload(rid, body.source)
+        n = await core.hunter.redownload(rid)
     except ValueError as e:
         raise as_http(e, 404) from e
     return {"ok": True, "dropped": n}
