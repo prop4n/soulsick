@@ -8,6 +8,7 @@ again once a week; recommendations are computed from them, never from the networ
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 from collections import defaultdict
 from datetime import UTC, datetime, timedelta
@@ -35,6 +36,7 @@ class DiscoverService:
     def __init__(self, core: Core) -> None:
         self.core = core
         self.client = httpx.AsyncClient(headers={"User-Agent": USER_AGENT}, timeout=30)
+        self._wake = asyncio.Event()
 
     async def fetch(self, artist_id: int) -> bool:
         """Asks ListenBrainz for the similar artists of `artist_id`; False if it failed
@@ -91,16 +93,26 @@ class DiscoverService:
             ids = list((await s.execute(select(Artist.id))).scalars())
         return sum([await self.fetch(aid) for aid in ids])
 
+    def soon(self) -> None:
+        """An artist was just followed: its similar artists are asked now, not at the next pass."""
+        self._wake.set()
+
+    async def _pause(self, seconds: float) -> None:
+        with contextlib.suppress(TimeoutError):
+            await asyncio.wait_for(self._wake.wait(), seconds)
+        self._wake.clear()
+
     async def loop(self) -> None:
-        await asyncio.sleep(120)
+        await self._pause(120)
         while True:
             try:
-                await self.refresh_stale()
+                while await self.refresh_stale():  # 10 at a time: a bulk add can bring more
+                    pass
             except asyncio.CancelledError:
                 raise
             except Exception:
                 log.exception("discover")
-            await asyncio.sleep(1800)
+            await self._pause(1800)
 
     async def dismiss(self, mbid: str) -> None:
         async with self.core.db.session() as s:

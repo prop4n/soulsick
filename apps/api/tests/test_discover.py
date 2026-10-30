@@ -147,3 +147,16 @@ async def test_listenbrainz_injoignable_ne_casse_rien(ctx):  # noqa: F811
     body = (await client.get("/api/discover")).json()
     assert body["recommendations"] == []
     assert body["pending"] == 2, "les artistes seront redemandés au prochain passage"
+
+
+async def test_un_artiste_ajoute_est_demande_tout_de_suite(ctx):  # noqa: F811
+    """Sans attendre le prochain passage (30 min) : suivre un artiste réveille Découvrir."""
+    import asyncio
+
+    client, core, engine, env = ctx
+    await client.post("/api/auth/setup", json={"username": "admin", "password": "motdepasse"})
+    pause = asyncio.create_task(core.discover._pause(1800))
+    await asyncio.sleep(0)
+    await core.catalog.add_artist(DAMSO, mode="validation", quality_profile_id=None,
+                                  primary_types=["album"], secondary_types=[])
+    await asyncio.wait_for(pause, 1)
