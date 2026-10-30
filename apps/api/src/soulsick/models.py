@@ -241,6 +241,9 @@ class LibraryFile(Base):
     # "" si aucune, NULL si pas encore lu)
     lyrics_file: Mapped[str | None] = mapped_column(String, nullable=True)
     lyrics_embedded: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Last search on LRCLIB, and what it said when nothing was written (« not_found », « instrumental »)
+    lyrics_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    lyrics_missing: Mapped[str | None] = mapped_column(String, nullable=True)
     scanned_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 

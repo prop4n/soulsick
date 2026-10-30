@@ -380,6 +380,17 @@ async def scan_library(core: Core = Depends(get_core)) -> dict:
     return {"ok": True}
 
 
+@router.get("/library/lyrics")
+async def lyrics_job(core: Core = Depends(get_core)) -> dict:
+    return core.lyrics.job
+
+
+@router.post("/library/lyrics")
+async def fetch_library_lyrics(core: Core = Depends(get_core)) -> dict:
+    """Lyrics from LRCLIB for every track without, in the background."""
+    return {"started": core.lyrics.start_library(), **core.lyrics.job}
+
+
 @router.post("/library/guard/check")
 async def check_library_guard(core: Core = Depends(get_core)) -> dict:
     """Look at the library folder again now (after fixing a mount, plugging a disk…)."""

@@ -399,6 +399,7 @@ class ExistingImportService:
 
         self.results.pop(d, None)
         await self.core.library.scan()
+        self.core.lyrics.after_import(rg_mbid)  # lyrics of the tracks that have none
         await self.core.journal.emit(
             "import.existing",
             M(

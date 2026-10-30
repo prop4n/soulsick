@@ -234,6 +234,9 @@ export interface LibraryFile {
   lyrics: FileLyrics | null
 }
 
+/** The pass looking for the library's missing lyrics on LRCLIB */
+export interface LyricsJob { running: boolean, done: number, total: number, found: number }
+
 /** Lyrics Navidrome plays for a file: the file next to it first, else those embedded */
 export interface FileLyrics {
   kind: 'synced' | 'plain'
@@ -402,6 +405,7 @@ export interface AppSettings {
     sync_interval_hours: number
     write_tags: boolean
     embed_cover: boolean
+    fetch_lyrics: boolean
   }
   navidrome: { enabled: boolean, url: string, username: string, password: string }
   qobuz: { token: string, quality: QobuzQuality, app_id: string, app_secret: string }

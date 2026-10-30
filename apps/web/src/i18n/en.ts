@@ -278,6 +278,11 @@ const en = {
     embedded: 'embedded in the file',
     count: 'Lyrics {n}/{total}',
     countSynced: '{n} synced',
+    fetch: 'Find lyrics',
+    fetchHint: 'On LRCLIB, for the tracks without: nothing is replaced',
+    found: 'Lyrics found for {n} track out of {total} | Lyrics found for {n} tracks out of {total}',
+    nothingToFetch: 'Every track already has its lyrics',
+    unavailable: 'LRCLIB doesn’t answer, try again later',
   },
   coverage: {
     title: 'Tracks received',
@@ -453,6 +458,10 @@ const en = {
   },
 
   library: {
+    fetchLyrics: 'Find missing lyrics',
+    fetchLyricsHint: 'On LRCLIB, in the background, for every track without lyrics (those tried less than 30 days ago are skipped)',
+    fetchLyricsStarted: 'Looking for lyrics in the background',
+    fetchLyricsRunning: 'Lyrics: {done}/{total}',
     title: 'Albums',
     fileCount: '{n} file | {n} files',
     tabs: { albums: 'In library', manual: 'Manual downloads', import: 'Import' },
@@ -792,6 +801,7 @@ const en = {
       multiDisc: 'multi-disc:',
       writeTags: 'Write MusicBrainz tags',
       embedCover: 'Embed cover art in files',
+      fetchLyrics: 'Find missing lyrics after each import (LRCLIB)',
       syncInterval: 'Resync MusicBrainz every (h)',
       pathLibrary: 'Library',
       pathDownloads: 'Downloads',
