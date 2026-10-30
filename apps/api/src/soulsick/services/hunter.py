@@ -576,7 +576,7 @@ class HunterService:
             M("download.complete_late" if status == CandidateStatus.FAILED else "download.complete", peer=c.username, n=len(audio)),
             release_group_id=c.release_group_id, candidate_id=candidate_id,
         )
-        asyncio.create_task(self.core.importer.import_candidate(candidate_id))
+        asyncio.create_task(self.core.importer.import_candidate(candidate_id, automatic=True))
 
     async def _retry_later(self, transfer_ids: list[int], delay: float) -> None:
         try:
