@@ -133,8 +133,10 @@ class ImportService:
         releases = await self.core.catalog.releases_with_tracks(rg.id)
         return c, rg, artist, profile, releases
 
-    async def import_candidate(self, candidate_id: int) -> None:
-        """A candidate's files arrived: try importing the album (all sources together)."""
+    async def import_candidate(self, candidate_id: int, automatic: bool = False) -> None:
+        """A candidate's files arrived: try importing the album (all sources together).
+        `automatic`: started by the engine, not by you; skipped if the album was just shelved
+        (the end of a source and the album rule can both fire for the same last file)."""
         if not await self.core.guard.check():
             # Library folder missing or not mounted: the album waits, imported once it is back
             ctx = await self._context(candidate_id)
@@ -142,6 +144,8 @@ class ImportService:
                 await self._status(ctx[1].id, AlbumStatus.NEEDS_REVIEW, M(HELD, problem=self.core.guard.problem))
             return
         async with self._lock:
+            if automatic and await self._just_imported(candidate_id):
+                return
             try:
                 await self._import(candidate_id)
             except Exception as e:
@@ -154,6 +158,38 @@ class ImportService:
                         "import.error", M("import.error", title=rg.title, error=str(e)), level="error",
                         release_group_id=rg.id, candidate_id=candidate_id,
                     )
+
+    async def _just_imported(self, candidate_id: int) -> bool:
+        async with self.core.db.session() as s:
+            c = await s.get(Candidate, candidate_id)
+            rg = await s.get(ReleaseGroup, c.release_group_id) if c else None
+            return bool(rg and rg.status == AlbumStatus.IMPORTED)
+
+    async def import_if_ready(self, rg_id: int) -> bool:
+        """The album rule: every track of the edition aimed at is received (from any peer, even a
+        dropped one) or already shelved, and nothing is in flight any more → it is imported,
+        whatever state its sources are in. True if the import was started."""
+        async with self.core.db.session() as s:
+            rg = await s.get(ReleaseGroup, rg_id)
+            if not rg or rg.status != AlbumStatus.DOWNLOADING:
+                return False
+            transfers = list((await s.execute(select(Transfer).where(Transfer.release_group_id == rg_id))).scalars())
+        if any(t.state not in _TERMINAL and is_audio(t.remote_path) for t in transfers):
+            return False
+        cov = await self.core.coverage.album(rg_id, offers=0)
+        states = [t["state"] for t in cov["tracks"]]
+        if not states or "received" not in states or any(x not in ("received", "in_library") for x in states):
+            return False
+        # Imported through the source that delivered last (the import gathers every source anyway)
+        last = max(
+            (t for t in transfers if t.candidate_id and t.state == TransferState.COMPLETE),
+            key=lambda t: (t.completed_at is not None, t.completed_at, t.id),
+            default=None,
+        )
+        if last is None:
+            return False
+        await self.import_candidate(last.candidate_id, automatic=True)
+        return True
 
     async def _status(self, rg_id: int, status: str, reason: Msg | None) -> None:
         async with self.core.db.session() as s:

@@ -446,6 +446,19 @@ export interface CoverageTrack {
   /** Format of the shelved file; `upgrade` when it is below the rest of the album */
   library_format?: string | null
   upgrade?: boolean
+  /** Other peers having this track, to take it from them */
+  holders?: CoverageHolder[]
+}
+
+export interface CoverageHolder {
+  candidate_id: number
+  username: string
+  status: string
+  format: string | null
+  filename: string
+  has_free_slots: boolean
+  queue_size: number
+  avg_speed: number
 }
 
 export interface CoverageFiller {

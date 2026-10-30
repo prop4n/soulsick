@@ -639,6 +639,24 @@ async def complete(rid: int, body: CompleteIn, core: Core = Depends(get_core)) -
     return {"ok": True, "files": n}
 
 
+class TakeIn(BaseModel):
+    candidate_id: int
+
+
+@router.post("/albums/{rid}/tracks/{tid}/take")
+async def take_track(rid: int, tid: int, body: TakeIn, core: Core = Depends(get_core)) -> dict:
+    """« Prendre chez… »: this track from this peer, now, even mid-download."""
+    async with core.db.session() as s:
+        c = await s.get(Candidate, body.candidate_id)
+        if not c or c.release_group_id != rid:
+            raise HTTPException(404)
+    try:
+        await core.hunter.take_track(rid, tid, body.candidate_id)
+    except (ValueError, EngineUnavailable) as e:
+        raise as_http(e) from e
+    return {"ok": True}
+
+
 @router.get("/candidates/{cid}/plan")
 async def get_plan(cid: int, core: Core = Depends(get_core)) -> dict:
     built = await core.importer.build_plan(cid)

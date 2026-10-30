@@ -109,6 +109,7 @@ class Core:
             self._tasks.append(asyncio.create_task(self.hunter.loop()))
             self._tasks.append(asyncio.create_task(self._sync_loop()))
             self._tasks.append(asyncio.create_task(self._queue_loop()))
+            self._tasks.append(asyncio.create_task(self._ready_loop()))
             self._tasks.append(asyncio.create_task(self.discover.loop()))
             if self.env.forwarded_port_file:
                 self._tasks.append(asyncio.create_task(self._port_loop()))
@@ -316,6 +317,26 @@ class Core:
                 await self.backend(t.remote_path).download(t.username, t.remote_path, t.local_path.rsplit("/", 1)[0])
             except Exception as e:
                 log.warning("resume %s: %s", t.remote_path, e)
+
+    async def _ready_tick(self) -> None:
+        """Safety net: every album still downloading whose tracks are all there is shelved,
+        whatever chain of events left it there."""
+        async with self.db.session() as s:
+            ids = list((await s.execute(
+                select(ReleaseGroup.id).where(ReleaseGroup.status == AlbumStatus.DOWNLOADING)
+            )).scalars())
+        for rid in ids:
+            await self.importer.import_if_ready(rid)
+
+    async def _ready_loop(self) -> None:
+        while True:
+            await asyncio.sleep(300)
+            try:
+                await self._ready_tick()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                log.exception("album safety net")
 
     async def _queue_loop(self) -> None:
         """Regularly asks peers for our position in their upload queue."""

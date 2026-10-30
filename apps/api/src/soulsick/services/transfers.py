@@ -292,9 +292,17 @@ class TransferService:
             self._pending.discard(tid)
             # Before this album's import, which moves the file away
             await self._settle_twins(tid, u)
-        if u.state in TERMINAL and data["candidate_id"]:
+        if u.state in TERMINAL and (data["candidate_id"] or data["release_group_id"]):
             # Outside the lock: what follows (import, fallback) starts transfers again
-            asyncio.create_task(self.core.hunter.on_transfer_terminal(data["candidate_id"]))
+            asyncio.create_task(self._after_terminal(data["candidate_id"], data["release_group_id"]))
+
+    async def _after_terminal(self, candidate_id: int | None, rg_id: int | None) -> None:
+        """A file of an album reached its end: its source is judged (retry, relay, done), then
+        the album rule — every track there and nothing in flight — shelves it whatever happened."""
+        if candidate_id:
+            await self.core.hunter.on_transfer_terminal(candidate_id)
+        if rg_id:
+            await self.core.importer.import_if_ready(rg_id)
 
     async def _journal(self, t: dict, prev: str) -> None:
         name = t["remote_path"].replace("\\", "/").rsplit("/", 1)[-1]
