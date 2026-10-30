@@ -246,28 +246,27 @@ class Core:
 
     async def _port_loop(self) -> None:
         """Behind gluetun: follows the port the VPN forwards (it changes on each reconnection)."""
-        waiting_logged = False
         while True:
             await asyncio.sleep(20)
             port = self._read_forwarded_port()
-            if port is None:
-                if not waiting_logged and not self.engine.forwarded_port:
-                    waiting_logged = True
-                    await self.journal.emit(
-                        "network.port_waiting", M("network.port_waiting", path=str(self.env.forwarded_port_file)),
-                        level="warning",
-                    )
+            if port == self.engine.forwarded_port:
                 continue
-            if port != self.engine.forwarded_port:
+            if port:
                 await self.journal.emit(
                     "network.port_forwarded", M("network.port_forwarded", port=port, previous=self.engine.forwarded_port or "—"),
                 )
-                await self.restart_engine()
+            await self.restart_engine()  # sans port : le moteur se coupe et attend
 
     async def restart_engine(self) -> None:
         cfg = (await self.settings.get()).soulseek
         if self.env.forwarded_port_file:
             self.engine.forwarded_port = self._read_forwarded_port()
+            if not self.engine.forwarded_port:
+                # Derrière le VPN, jamais sur le port configuré : personne ne pourrait nous joindre
+                waiting = M("network.port_waiting", path=str(self.env.forwarded_port_file))
+                await self.engine.hold(cfg, waiting)
+                await self.journal.emit("network.port_waiting", waiting, level="warning")
+                return
         rules = await self.shares.rules()
         pic = self.env.profile_picture_path
         self.engine.picture = pic.read_bytes() if pic.is_file() else None

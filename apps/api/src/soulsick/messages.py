@@ -196,7 +196,7 @@ EN: dict[str, str] = {
     "error.rooms_timeout": "The server didn’t send the room list in time",
     "error.room_join_timeout": "Couldn’t join “{room}” (no answer from the server)",
     "network.port_forwarded": "VPN forwarded port is now {port} (was {previous}): Soulseek reconnects on it",
-    "network.port_waiting": "Waiting for the VPN forwarded port (file {path} is empty or missing): is port forwarding on in gluetun?",
+    "network.port_waiting": "Waiting for the VPN forwarded port (file {path} is empty or missing), Soulseek stays offline until then: is port forwarding on in gluetun?",
     "slsk.disconnected": "Disconnected from the Soulseek server (reconnecting automatically)",
 
     # --- engine state / errors shown in the UI
