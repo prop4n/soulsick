@@ -483,6 +483,7 @@ class ImportService:
 
         # Index files BEFORE announcing the album as shelved (otherwise: shelved with 0 files)
         await self.core.library.scan()
+        self.core.lyrics.after_import(rg.mbid)  # lyrics of the tracks that came without
 
         metas = [read_meta(p) for p in [*new_paths, *kept]]
         fmt = worst_format([m.format for m in metas], [])

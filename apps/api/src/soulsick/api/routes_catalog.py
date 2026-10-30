@@ -481,6 +481,16 @@ async def hunt_album(rid: int, core: Core = Depends(get_core)) -> dict:
     return {"ok": True}
 
 
+@router.post("/albums/{rid}/lyrics")
+async def fetch_album_lyrics(rid: int, core: Core = Depends(get_core)) -> dict:
+    """Lyrics from LRCLIB for the album's tracks without, now (even those tried recently)."""
+    async with core.db.session() as s:
+        rg = await s.get(ReleaseGroup, rid)
+        if not rg:
+            raise HTTPException(404)
+    return await core.lyrics.fetch_album(rg.mbid, by_user=True)
+
+
 class RedownloadIn(BaseModel):
     source: Literal["qobuz", "soulseek"] = "qobuz"
 

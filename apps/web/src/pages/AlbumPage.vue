@@ -24,6 +24,7 @@ import { Button } from '@/components/ui/button'
 import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from '@/components/ui/empty'
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Skeleton } from '@/components/ui/skeleton'
+import { Spinner } from '@/components/ui/spinner'
 import { Switch } from '@/components/ui/switch'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { useCoverAccent } from '@/composables/coverAccent'
@@ -78,6 +79,19 @@ const present = computed(() => new Set((album.value?.files ?? []).map(f => f.rec
 const lyricsByRecording = computed(() => new Map<string, FileLyrics | null>(
   (album.value?.files ?? []).filter(f => f.recording_mbid).map(f => [f.recording_mbid!, f.lyrics]),
 ))
+const fetchLyrics = useMutation({
+  mutationFn: () => api.post<{ asked: number, found: number, error: string | null }>(`/albums/${album.value!.id}/lyrics`),
+  onSuccess: (r) => {
+    if (r.error)
+      toast.warning(t('lyrics.unavailable'), { description: r.error })
+    else if (!r.asked)
+      toast.info(t('lyrics.nothingToFetch'))
+    else
+      toast.success(t('lyrics.found', { n: r.found, total: r.asked }, r.found))
+    qc.invalidateQueries({ queryKey: ['album'] })
+  },
+  onError: e => toast.error(t('lyrics.unavailable'), { description: e.message }),
+})
 const lyricsStats = computed(() => {
   const all = [...lyricsByRecording.value.values()]
   return { total: all.length, with: all.filter(Boolean).length, synced: all.filter(l => l?.kind === 'synced').length }
@@ -308,6 +322,16 @@ const dismiss = useMutation({
             <span v-if="lyricsStats.total" class="flex items-center gap-1.5">
               {{ t('lyrics.count', { n: lyricsStats.with, total: lyricsStats.total }) }}<template v-if="lyricsStats.synced">
                 · {{ t('lyrics.countSynced', lyricsStats.synced) }}</template>
+              <button
+                v-if="lyricsStats.with < lyricsStats.total"
+                type="button"
+                class="inline-flex items-center gap-1 text-primary hover:underline disabled:opacity-60"
+                :title="t('lyrics.fetchHint')"
+                :disabled="fetchLyrics.isPending.value"
+                @click="fetchLyrics.mutate()"
+              >
+                <Spinner v-if="fetchLyrics.isPending.value" class="size-3" />{{ t('lyrics.fetch') }}
+              </button>
             </span>
             <span v-if="isPartial(album)" class="text-warning">{{ t('album.partial', { n: album.present_tracks, total: album.total_tracks }) }}</span>
             <span v-if="album.imported_path" class="min-w-0 truncate font-mono" :title="album.imported_path">{{ album.imported_path }}</span>

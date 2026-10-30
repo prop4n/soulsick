@@ -358,6 +358,12 @@ const removeProfile = useMutation({
                 {{ t('settings.library.embedCover') }}
               </FieldLabel>
             </Field>
+            <Field orientation="horizontal">
+              <Switch id="fl" v-model="form.library.fetch_lyrics" />
+              <FieldLabel for="fl">
+                {{ t('settings.library.fetchLyrics') }}
+              </FieldLabel>
+            </Field>
           </div>
           <Field class="sm:max-w-xs">
             <FieldLabel for="si">

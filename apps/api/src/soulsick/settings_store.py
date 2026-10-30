@@ -44,6 +44,8 @@ class LibrarySettings(BaseModel):
     sync_interval_hours: int = 24
     write_tags: bool = True
     embed_cover: bool = True
+    # Lyrics from LRCLIB for the tracks without, after each import
+    fetch_lyrics: bool = True
 
 
 class NavidromeSettings(BaseModel):

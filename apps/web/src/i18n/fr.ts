@@ -277,6 +277,11 @@ const fr: Messages = {
     embedded: 'intégrées au fichier',
     count: 'Paroles {n}/{total}',
     countSynced: 'dont {n} synchronisée | dont {n} synchronisées',
+    fetch: 'Chercher les paroles',
+    fetchHint: 'Sur LRCLIB, pour les pistes qui n’en ont pas : rien n’est remplacé',
+    found: 'Paroles trouvées pour {n} piste sur {total} | Paroles trouvées pour {n} pistes sur {total}',
+    nothingToFetch: 'Toutes les pistes ont déjà leurs paroles',
+    unavailable: 'LRCLIB ne répond pas, réessaie plus tard',
   },
   coverage: {
     title: 'Pistes reçues',
@@ -452,6 +457,10 @@ const fr: Messages = {
   },
 
   library: {
+    fetchLyrics: 'Chercher les paroles manquantes',
+    fetchLyricsHint: 'Sur LRCLIB, en arrière-plan, pour toutes les pistes sans paroles (celles cherchées il y a moins de 30 jours sont sautées)',
+    fetchLyricsStarted: 'Recherche des paroles lancée en arrière-plan',
+    fetchLyricsRunning: 'Paroles : {done}/{total}',
     title: 'Albums',
     fileCount: '{n} fichier | {n} fichiers',
     tabs: { albums: 'Rangés', manual: 'Téléchargements manuels', import: 'Importer' },
@@ -791,6 +800,7 @@ const fr: Messages = {
       multiDisc: 'multi-disques :',
       writeTags: 'Écrire les tags MusicBrainz',
       embedCover: 'Intégrer la pochette aux fichiers',
+      fetchLyrics: 'Chercher les paroles manquantes après chaque import (LRCLIB)',
       syncInterval: 'Resynchroniser MusicBrainz toutes les (h)',
       pathLibrary: 'Bibliothèque',
       pathDownloads: 'Réception',
