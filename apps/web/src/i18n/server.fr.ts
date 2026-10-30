@@ -125,6 +125,7 @@ const serverFr: Record<string, string> = {
   'library.guard.blocked': 'Bibliothèque indisponible, imports en attente : {problem}',
   'library.guard.back': 'Dossier de la bibliothèque {path} de nouveau disponible : les imports reprennent',
   'library.guard.confirmed_empty': 'Bibliothèque confirmée vide par toi : {n} fichier oublié | Bibliothèque confirmée vide par toi : {n} fichiers oubliés',
+  'library.cataloged': 'Déjà dans ta bibliothèque : {albums} album(s) de {artists} nouvel(s) artiste(s) ajouté(s), non suivis',
   'library.scanned': 'Bibliothèque analysée : {n} fichiers audio ({changed} nouveaux/modifiés, {removed} disparus)',
   'lyrics.fetched': 'Paroles trouvées sur LRCLIB pour {n} piste(s) sur {total} sans',
   'lyrics.library_done': 'Paroles : {n} trouvées sur LRCLIB sur {total} pistes demandées',

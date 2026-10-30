@@ -182,12 +182,12 @@ const en = {
   artists: {
     title: 'Followed artists',
     description: 'Each artist has its mode (automatic or ask me), its quality profile and the release types you want.',
-    filters: { attention: 'Needs you', auto: 'Automatic', paused: 'Paused' },
+    filters: { attention: 'Needs you', auto: 'Automatic', followed: 'Followed', paused: 'Not followed' },
     empty: 'No artist followed',
     emptyHint: 'Add an artist from MusicBrainz: Soulsick fetches the discography and knows what your library is missing.',
     toHandle: '{n} to handle',
     inLibrary: 'in library',
-    mode: { auto: 'automatic', validation: 'ask me', paused: 'paused' },
+    mode: { auto: 'automatic', validation: 'ask me', paused: 'not followed' },
   },
 
   artist: {
