@@ -355,7 +355,7 @@ class TransferService:
         self._live.pop(tid, None)
         self.core.hub.publish("transfer", data)
         dest = os.path.dirname(t.local_path) if t.local_path else os.path.join(str(self.core.env.downloads_dir), "manual")
-        await self.core.backend(t.remote_path).download(t.username, t.remote_path, dest)
+        await self.core.engine.download(t.username, t.remote_path, dest)
         return t
 
     async def pause(self, tid: int) -> bool:
@@ -365,7 +365,7 @@ class TransferService:
             if not t or t.direction != "download" or t.state in TERMINAL or t.state == TransferState.PAUSED:
                 return False
             username, path = t.username, t.remote_path
-        await self.core.backend(path).pause(username, path, "download")
+        await self.core.engine.pause(username, path, "download")
         async with self.core.db.session() as s:
             t = await s.get(Transfer, tid)
             assert t
@@ -392,7 +392,7 @@ class TransferService:
         self.register("download", username, path, tid)
         self.core.hub.publish("transfer", data)
         dest = os.path.dirname(local) if local else os.path.join(str(self.core.env.downloads_dir), "manual")
-        await self.core.backend(path).download(username, path, dest)
+        await self.core.engine.download(username, path, dest)
         return True
 
     async def load_cancelled(self) -> None:
@@ -471,8 +471,8 @@ class TransferService:
 
     async def stop_on_engine(self, username: str, path: str, direction: str = "download") -> None:
         """Aborts on the engine side and drops it from the engine's list (it won't come back)."""
-        backend = self.core.backend(path)
-        for step in (backend.abort, backend.remove):
+        engine = self.core.engine
+        for step in (engine.abort, engine.remove):
             try:
                 await step(username, path, direction)
             except Exception as e:  # offline, or unknown to the engine
