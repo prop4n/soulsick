@@ -1,6 +1,7 @@
 """Paroles depuis LRCLIB : seulement pour les pistes qui n'en ont pas, jamais rien d'écrasé."""
 
 import asyncio
+import os
 
 import httpx
 from fakes import TRACKS, tiny_flac
@@ -15,11 +16,14 @@ SYNCED = "[00:01.00] Load up on guns\n"
 RG = "1b022e01-4da6-387b-8658-8678046e4cef"
 
 
-def lrclib(asked: list[str], answers: dict[str, object]) -> httpx.AsyncClient:
-    """A fake LRCLIB: by title, a JSON answer, or an HTTP status."""
+def lrclib(asked: list[str], answers: dict[str, object], search: dict[str, list] | None = None) -> httpx.AsyncClient:
+    """A fake LRCLIB: the exact lookup answers by title (a JSON answer, or an HTTP status);
+    the search answers from `search` (nothing by default)."""
 
     def handler(request: httpx.Request) -> httpx.Response:
         title = request.url.params["track_name"]
+        if request.url.path.endswith("/search"):
+            return httpx.Response(200, json=(search or {}).get(title, []))
         asked.append(title)
         a = answers.get(title, 404)
         if isinstance(a, int):
@@ -138,3 +142,50 @@ async def test_apres_un_import_les_paroles_manquantes_sont_cherchees(ctx):  # no
     dest = env.music_dir / "Nirvana" / "1991 - Nevermind"
     assert (dest / "02 - In Bloom.lrc").read_text() == SYNCED
     assert (dest / "01 - Smells Like Teen Spirit.lrc").read_text() == "du pair"
+
+
+def _hit(artist, title, duration, album="Autre album", synced=None, plain=None, instrumental=False):
+    return {"artistName": artist, "trackName": title, "albumName": album, "duration": duration,
+            "syncedLyrics": synced, "plainLyrics": plain, "instrumental": instrumental}
+
+
+async def test_lrclib_range_le_morceau_ailleurs_la_recherche_le_trouve(ctx):  # noqa: F811
+    """La recherche exacte rate (autre album chez LRCLIB) : la recherche par artiste et titre
+    trouve, et on garde le même morceau, synchronisé de préférence."""
+    client, core, engine, env = ctx
+    paths = await _shelve(core, env, ["Basique (Radio Edit)"])  # 200 s, Nirvana
+    core.lyrics.client = lrclib([], {}, search={"Basique": [
+        _hit("Someone Else", "Basique", 200, synced=SYNCED),          # autre artiste
+        _hit("Nirvana", "Basique", 230, synced=SYNCED),               # autre version (durée)
+        _hit("Nirvana", "Basique", 199, plain="texte seul"),
+        _hit("Nirvana feat. X", "Basique", 201.5, synced=SYNCED, album="Orelsan Songs"),
+    ]})
+
+    r = await core.lyrics.fetch_album(RG)
+    assert r == {"asked": 1, "found": 1, "error": None}
+    assert open(paths["Basique (Radio Edit)"].replace(".flac", ".lrc")).read() == SYNCED
+
+
+async def test_jamais_les_paroles_d_une_autre_version(ctx):  # noqa: F811
+    client, core, engine, env = ctx
+    paths = await _shelve(core, env, ["In Bloom"])
+    core.lyrics.client = lrclib([], {}, search={"In Bloom": [_hit("Nirvana", "In Bloom", 260, synced=SYNCED)]})
+
+    assert (await core.lyrics.fetch_album(RG))["found"] == 0
+    assert not os.path.exists(paths["In Bloom"].replace(".flac", ".lrc"))
+
+
+async def test_le_bouton_reessaie_si_lrclib_est_sature(ctx, monkeypatch):  # noqa: F811
+    client, core, engine, env = ctx
+    monkeypatch.setattr(lyrics_fetch, "QUICK", (0, 0))
+    await _shelve(core, env, ["Synced"])
+    calls = []
+
+    def handler(request):
+        calls.append(1)
+        if len(calls) == 1:
+            return httpx.Response(503, json={"message": "The server is busy"})
+        return httpx.Response(200, json={"instrumental": False, "syncedLyrics": SYNCED, "plainLyrics": None})
+
+    core.lyrics.client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    assert (await core.lyrics.fetch_album(RG, by_user=True)) == {"asked": 1, "found": 1, "error": None}

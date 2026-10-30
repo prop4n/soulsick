@@ -13,6 +13,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
+import unicodedata
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
@@ -29,9 +31,51 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 URL = "https://lrclib.net/api/get"
+SEARCH_URL = "https://lrclib.net/api/search"
+DURATION_SLACK = 3  # seconds: beyond, it is another version of the song
 RETRY_AFTER = timedelta(days=30)  # LRCLIB grows: what wasn't there is asked again
 PAUSE = 0.5  # between two requests
 BACKOFF = (5, 20, 60)  # LRCLIB busy: waits before giving up the pass
+QUICK = (2, 4)  # the same, when you are waiting for it
+
+
+def _norm(text: str) -> str:
+    text = unicodedata.normalize("NFKD", text.casefold())
+    return re.sub(r"[\W_]+", "", "".join(c for c in text if not unicodedata.combining(c)))
+
+
+def _bare_title(title: str) -> str:
+    """The title without what LRCLIB often writes otherwise: (Remastered), [Live], feat. X,
+    a leading « Θ. »."""
+    title = re.sub(r"[\(\[][^\)\]]*[\)\]]", " ", title)
+    title = re.sub(r"\s(feat|ft)\.?\s.*$", " ", title, flags=re.I)
+    title = re.sub(r"^\W*\w\.\s+", "", title.strip())
+    return title.strip()
+
+
+def pick(results: list[dict], f: LibraryFile) -> dict | None:
+    """Among LRCLIB's search results, the same song: same artist, same title (bare), duration
+    within DURATION_SLACK. Synced first, then plain lyrics, then instrumental; then the closest
+    duration, then the same album. None rather than another version."""
+    artist, title = _norm(f.tag_artist or ""), _norm(_bare_title(f.tag_title or ""))
+    if not (artist and title and f.duration):
+        return None
+    ok = []
+    for r in results:
+        theirs = _norm(r.get("artistName") or "")
+        if not theirs or (artist not in theirs and theirs not in artist):
+            continue
+        if _norm(_bare_title(r.get("trackName") or "")) != title:
+            continue
+        if not r.get("duration") or abs(r["duration"] - f.duration) > DURATION_SLACK:
+            continue
+        ok.append(r)
+    ok.sort(key=lambda r: (
+        0 if r.get("syncedLyrics") else 1 if r.get("plainLyrics") else 2,
+        abs(r["duration"] - f.duration),
+        _norm(r.get("albumName") or "") != _norm(f.tag_album or ""),
+    ))
+    return ok[0] if ok else None
 
 
 class LrclibUnavailable(Exception):
@@ -47,18 +91,12 @@ class LyricsFetchService:
 
     # --- One track ---------------------------------------------------------------
 
-    async def _ask(self, f: LibraryFile, patient: bool = True) -> dict | None:
-        """LRCLIB's answer for this file, None if it doesn't know the track. `patient`: waits
-        when it is busy (background), otherwise gives up at once (you are waiting)."""
-        params = {
-            "artist_name": f.tag_artist or "",
-            "track_name": f.tag_title or "",
-            "album_name": f.tag_album or "",
-            "duration": round(f.duration or 0),  # LRCLIB matches it within 2 s: never another version
-        }
-        for wait in (*(BACKOFF if patient else ()), None):
+    async def _call(self, url: str, params: dict, patient: bool):
+        """One LRCLIB request: its JSON, or None if it doesn't know. Busy: waits and tries again
+        (long in the background, briefly when you are waiting), then LrclibUnavailable."""
+        for wait in (*(BACKOFF if patient else QUICK), None):
             try:
-                r = await self.client.get(URL, params=params)
+                r = await self.client.get(url, params=params)
             except httpx.HTTPError as e:
                 err = str(e)
             else:
@@ -70,6 +108,28 @@ class LyricsFetchService:
             if wait is None:
                 raise LrclibUnavailable(err)
             await asyncio.sleep(wait)
+        return None
+
+    async def _ask(self, f: LibraryFile, patient: bool = True) -> dict | None:
+        """LRCLIB's answer for this file, None if it doesn't know the track.
+
+        First the exact lookup (artist, title, album, duration within 2 s). It misses as soon as
+        LRCLIB files the song under another album or spelling: then a search by artist and
+        title, kept only if it is the same song (see `pick`)."""
+        exact = await self._call(URL, {
+            "artist_name": f.tag_artist or "",
+            "track_name": f.tag_title or "",
+            "album_name": f.tag_album or "",
+            "duration": round(f.duration or 0),
+        }, patient)
+        if exact:
+            return exact
+        titles = list(dict.fromkeys([f.tag_title or "", _bare_title(f.tag_title or "")]))
+        for title in titles:
+            found = await self._call(SEARCH_URL, {"artist_name": f.tag_artist or "", "track_name": title}, patient)
+            best = pick(found or [], f)
+            if best:
+                return best
         return None
 
     async def fetch_file(self, file_id: int, patient: bool = True) -> str | None:
