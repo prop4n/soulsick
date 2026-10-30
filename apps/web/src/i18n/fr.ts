@@ -181,12 +181,12 @@ const fr: Messages = {
   artists: {
     title: 'Artistes suivis',
     description: 'Chaque artiste a son mode (automatique ou me demander), son profil qualité et les types de sorties que tu veux.',
-    filters: { attention: 'À traiter', auto: 'Automatiques', paused: 'En pause' },
+    filters: { attention: 'À traiter', auto: 'Automatiques', followed: 'Suivis', paused: 'Non suivis' },
     empty: 'Aucun artiste suivi',
     emptyHint: 'Ajoute un artiste depuis MusicBrainz : Soulsick récupère sa discographie et sait ce qui manque dans ta bibliothèque.',
     toHandle: '{n} à traiter',
     inLibrary: 'rangés',
-    mode: { auto: 'automatique', validation: 'me demander', paused: 'en pause' },
+    mode: { auto: 'automatique', validation: 'me demander', paused: 'non suivi' },
   },
 
   artist: {

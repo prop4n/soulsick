@@ -129,6 +129,7 @@ EN: dict[str, str] = {
     "musicbrainz.detail.added": ", {n} new followed: {titles} | , {n} new followed: {titles}",
     "musicbrainz.detail.shared": ", {n} shared with another followed artist ({titles}) | , {n} shared with another followed artist ({titles})",
     "musicbrainz.sync_failed": "MusicBrainz sync failed for {name}: {error}",
+    "library.cataloged": "Already in your library: {albums} album(s) of {artists} new artist(s) added, not followed",
     "library.scanned": "Library scanned: {n} audio files ({changed} new/changed, {removed} gone)",
     "lyrics.fetched": "Lyrics found on LRCLIB for {n} track(s) out of {total} without",
     "lyrics.library_done": "Lyrics: {n} found on LRCLIB out of {total} tracks asked",

@@ -33,6 +33,7 @@ class LibraryService:
         self.core = core
         self._lock = asyncio.Lock()
         self.scanning = False
+        self._tasks: set[asyncio.Task] = set()
 
     async def scan(self, confirm_empty: bool = False) -> dict:
         """`confirm_empty`: the person confirmed the library folder really is empty now
@@ -118,6 +119,10 @@ class LibraryService:
             await s.commit()
 
         await self.refresh_all()
+        # Albums tagged with MusicBrainz but unknown to the catalog: added (not followed), in the background
+        task = asyncio.create_task(self.core.catalog.from_library())
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
         stats = {"files": len(on_disk), "new_or_changed": len(changed), "removed": len(removed)}
         await self.core.journal.emit(
             "library.scanned",
