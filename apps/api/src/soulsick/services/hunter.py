@@ -631,6 +631,14 @@ class HunterService:
                 for t in (await s.execute(select(Transfer).where(Transfer.candidate_id == c.id))).scalars()
             }
             sizes = {f["filename"]: f.get("size") for f in c.files}
+            # A peer taken back (after a switch): its files cancelled back then, and not asked
+            # again (another peer brought them), are no longer its. Left attached, they would
+            # fail it once this round is done, and the album would never be shelved
+            asked = {x["filename"] for x in files}
+            for path, t in list(existing.items()):
+                if path not in asked and t.state in TERMINAL and t.state != TransferState.COMPLETE:
+                    t.candidate_id = None
+                    del existing[path]
             rows = []
             for x in files:
                 if x["filename"] in existing:
