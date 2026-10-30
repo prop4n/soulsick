@@ -77,11 +77,24 @@ class CatalogService:
         secondary_types: list[str],
         monitor: str = "none",  # none | future | all — par défaut rien : tu choisis ensuite
     ) -> Artist:
+        a, created = await self._create_artist(
+            mbid, mode=mode, quality_profile_id=quality_profile_id,
+            primary_types=primary_types, secondary_types=secondary_types,
+        )
+        if created:
+            await self.sync_artist(a.id, initial_monitor=monitor)
+        return a
+
+    async def _create_artist(
+        self, mbid: str, *, mode: str, quality_profile_id: int | None,
+        primary_types: list[str], secondary_types: list[str],
+    ) -> tuple[Artist, bool]:
+        """Fiche de l'artiste seule (une requête MusicBrainz), sans sa discographie."""
         info = await self.core.mb.get_artist(mbid)
         async with self.core.db.session() as s:
             existing = (await s.execute(select(Artist).where(Artist.mbid == mbid))).scalar_one_or_none()
             if existing:
-                return existing
+                return existing, False
             a = Artist(
                 mbid=mbid,
                 name=info["name"],
@@ -103,23 +116,28 @@ class CatalogService:
             artist_id=a.id,
             data={"mbid": mbid, "primary_types": primary_types, "secondary_types": secondary_types},
         )
-        await self.sync_artist(a.id, initial_monitor=monitor)
-        return a
+        self.core.discover.soon()
+        return a, True
 
-    async def add_artists(self, mbids: list[str], **settings) -> int:
-        """Follows several artists with the same settings, one after the other (MusicBrainz
-        allows one request per second). One that fails doesn't stop the others."""
-        added = 0
+    async def add_artists(self, mbids: list[str], *, monitor: str = "none", **settings) -> int:
+        """Follows several artists with the same settings (MusicBrainz allows one request per
+        second). Every artist is created first, a second each, so they all show up quickly;
+        the discographies, several requests each, come after. One that fails doesn't stop the others."""
+        created: list[int] = []
         for mbid in mbids:
             try:
-                await self.add_artist(mbid, **settings)
-                added += 1
+                a, new = await self._create_artist(mbid, **settings)
             except Exception as e:
                 await self.core.journal.emit(
                     "musicbrainz.sync_failed", M("musicbrainz.sync_failed", name=mbid, error=str(e)),
                     level="error",
                 )
-        return added
+                continue
+            if new:
+                created.append(a.id)
+        for aid in created:
+            await self.sync_artist(aid, initial_monitor=monitor)  # gère ses propres erreurs
+        return len(created)
 
     async def sync_artist(self, artist_id: int, initial_monitor: str | None = None) -> None:
         """Récupère la discographie et marque comme recherchés les albums suivis non présents."""

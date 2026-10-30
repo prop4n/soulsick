@@ -182,7 +182,7 @@ const serverFr: Record<string, string> = {
   'error.rooms_timeout': 'Le serveur n’a pas envoyé la liste des salons à temps',
   'error.room_join_timeout': 'Impossible de rejoindre « {room} » (pas de réponse du serveur)',
   'network.port_forwarded': 'Port redirigé par le VPN : {port} (avant : {previous}) ; Soulseek se reconnecte dessus',
-  'network.port_waiting': 'En attente du port redirigé par le VPN (le fichier {path} est vide ou absent) : la redirection de port est-elle activée dans gluetun ?',
+  'network.port_waiting': 'En attente du port redirigé par le VPN (le fichier {path} est vide ou absent), Soulseek reste hors ligne d’ici là : la redirection de port est-elle activée dans gluetun ?',
   'slsk.disconnected': 'Déconnecté du serveur Soulseek (reconnexion automatique)',
 
   'engine.not_configured': 'Identifiants Soulseek non configurés',
