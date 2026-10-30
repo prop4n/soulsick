@@ -12,6 +12,7 @@ import SwitchPeerMenu from '@/components/SwitchPeerMenu.vue'
 import RedownloadButton from '@/components/RedownloadButton.vue'
 import CoverArt from '@/components/CoverArt.vue'
 import CoverBackdrop from '@/components/CoverBackdrop.vue'
+import DownloadPanel from '@/components/DownloadPanel.vue'
 import EventFeed from '@/components/EventFeed.vue'
 import FormatTag from '@/components/FormatTag.vue'
 import ImportReview from '@/components/ImportReview.vue'
@@ -252,26 +253,27 @@ const dismiss = useMutation({
                 :downloading="downloading"
                 @done="refresh"
               />
-              <!-- Switch the active source to another candidate, right from here -->
-              <SwitchPeerMenu
-                v-for="c in activeSources"
-                :key="c.id"
-                :candidate-id="c.id"
-                :stuck="stuckSources.has(c.id)"
-                :peer="activeSources.length > 1 ? c.username : undefined"
-                size="sm"
-              />
-              <Button
-                v-if="downloading"
-                variant="ghost"
-                size="sm"
-                class="text-muted-foreground hover:text-destructive"
-                :disabled="cancelling"
-                @click="cancelDownload()"
-              >
-                <XIcon data-icon="inline-start" />
-                {{ t('album.cancelDownload') }}
-              </Button>
+              <!-- Switching peer and cancelling live in the download panel; here only when it isn't shown -->
+              <template v-if="downloading && !(coverage && hasSources)">
+                <SwitchPeerMenu
+                  v-for="c in activeSources"
+                  :key="c.id"
+                  :candidate-id="c.id"
+                  :stuck="stuckSources.has(c.id)"
+                  :peer="activeSources.length > 1 ? c.username : undefined"
+                  size="sm"
+                />
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  class="text-muted-foreground hover:text-destructive"
+                  :disabled="cancelling"
+                  @click="cancelDownload()"
+                >
+                  <XIcon data-icon="inline-start" />
+                  {{ t('album.cancelDownload') }}
+                </Button>
+              </template>
               <Button
                 v-if="album.status === 'pending_approval'"
                 variant="ghost"
@@ -308,8 +310,20 @@ const dismiss = useMutation({
 
       <ImportReview v-if="reviewCandidate" :candidate-id="reviewCandidate.id" :releases="album.releases" />
 
+      <!-- The whole download in one place, until the album is shelved -->
+      <DownloadPanel
+        v-if="coverage && hasSources && album.status !== 'imported'"
+        :album-id="album.id"
+        :coverage="coverage"
+        :transfers="album.transfers"
+        :active="activeSources"
+        :stuck="stuckSources"
+        :cancelling="cancelling"
+        @cancel="cancelDownload()"
+      />
+      <!-- A shelved album with tracks below the rest: who has better ones -->
       <TrackCoverage
-        v-if="coverage && ((hasSources && album.status !== 'imported') || coverage.summary.upgrade)"
+        v-else-if="coverage?.summary.upgrade"
         :album-id="album.id"
         :coverage="coverage"
         @details="tab = 'tracks'; viewRelease = String(coverage.release_id)"
