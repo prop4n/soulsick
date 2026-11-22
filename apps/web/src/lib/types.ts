@@ -172,7 +172,7 @@ export interface ScoreDetail {
     confidence: number
     missing: string[]
   }
-  peer?: { points: number, max: number, free_slot: boolean, queue_size: number, avg_speed: number }
+  peer?: { points: number, max: number, record?: 'delivered' | 'silent' | null, free_slot: boolean, queue_size: number, avg_speed: number }
 }
 
 export interface PlanItem {

@@ -144,6 +144,8 @@ const en = {
     freeSlot: 'free slot',
     noFreeSlot: 'no free slot',
     queue: 'queue {n}',
+    recordDelivered: 'sent before',
+    recordSilent: 'silent last time',
   },
 
   home: {
