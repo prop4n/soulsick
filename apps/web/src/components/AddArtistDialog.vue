@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { ArtistMode, MBArtist } from '@/lib/types'
+import type { MBArtist } from '@/lib/types'
 import { ArrowLeftIcon, CheckIcon, SearchIcon } from '@lucide/vue'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/vue-query'
 import { refDebounced } from '@vueuse/core'
@@ -10,13 +10,11 @@ import { toast } from 'vue-sonner'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
-import { Field, FieldDescription, FieldGroup, FieldLabel, FieldLegend, FieldSet } from '@/components/ui/field'
+import { FieldDescription, FieldGroup, FieldLegend, FieldSet } from '@/components/ui/field'
 import { InputGroup, InputGroupAddon, InputGroupInput } from '@/components/ui/input-group'
-import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Spinner } from '@/components/ui/spinner'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
-import { useProfiles } from '@/composables/queries'
 import { api } from '@/lib/api'
 import { RELEASE_TYPES, releaseTypeLabel, SECONDARY_TYPES } from '@/lib/status'
 import { cn } from '@/lib/utils'
@@ -34,17 +32,9 @@ const q = ref('')
 const debounced = refDebounced(q, 350)
 const picked = ref<MBArtist | null>(null)
 
-const mode = ref<ArtistMode>('validation')
-const profileId = ref<string>('')
 const primary = ref<string[]>(['album', 'ep'])
 const secondary = ref<string[]>([])
 const monitor = ref<'all' | 'future' | 'none'>('none')
-
-const { data: profiles } = useProfiles()
-watch(profiles, (p) => {
-  if (p?.length && !profileId.value)
-    profileId.value = String(p[0]!.id)
-}, { immediate: true })
 
 const { data: results, isFetching } = useQuery({
   queryKey: ['mb-artists', debounced],
@@ -86,8 +76,6 @@ watch(open, (o) => {
 const add = useMutation({
   mutationFn: () => api.post<{ id: number, name: string }>('/artists', {
     mbid: picked.value!.mbid,
-    mode: mode.value,
-    quality_profile_id: profileId.value ? Number(profileId.value) : null,
     primary_types: primary.value,
     secondary_types: secondary.value,
     monitor: monitor.value,
@@ -104,8 +92,6 @@ const add = useMutation({
 const addMany = useMutation({
   mutationFn: () => api.post<{ queued: number }>('/artists/bulk', {
     mbids: many.value.map(a => a.mbid),
-    mode: mode.value,
-    quality_profile_id: profileId.value ? Number(profileId.value) : null,
     primary_types: primary.value,
     secondary_types: secondary.value,
     monitor: monitor.value,
@@ -198,39 +184,6 @@ function submit() {
       <!-- Step 2: how to follow -->
       <form v-else class="flex flex-col gap-6 px-6 py-5" @submit.prevent="submit()">
         <FieldGroup>
-          <FieldSet>
-            <FieldLegend variant="label">
-              {{ t('addArtist.whenFound') }}
-            </FieldLegend>
-            <ToggleGroup v-model="mode" type="single" variant="outline" class="grid w-full grid-cols-2">
-              <ToggleGroupItem value="validation" class="h-auto flex-col items-start gap-0.5 px-3 py-2.5 text-left">
-                <span class="text-[13px] font-medium">{{ t('artists.mode.validation') }}</span>
-                <span class="text-[11.5px] font-normal text-muted-foreground">{{ t('addArtist.validationHint') }}</span>
-              </ToggleGroupItem>
-              <ToggleGroupItem value="auto" class="h-auto flex-col items-start gap-0.5 px-3 py-2.5 text-left">
-                <span class="text-[13px] font-medium">{{ t('artists.mode.auto') }}</span>
-                <span class="text-[11.5px] font-normal text-muted-foreground">{{ t('addArtist.autoHint') }}</span>
-              </ToggleGroupItem>
-            </ToggleGroup>
-          </FieldSet>
-
-          <Field>
-            <FieldLabel>{{ t('artist.profile') }}</FieldLabel>
-            <Select v-model="profileId">
-              <SelectTrigger class="w-full">
-                <SelectValue :placeholder="t('addArtist.pickProfile')" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectGroup>
-                  <SelectItem v-for="p in profiles ?? []" :key="p.id" :value="String(p.id)">
-                    {{ p.name }}
-                  </SelectItem>
-                </SelectGroup>
-              </SelectContent>
-            </Select>
-            <FieldDescription>{{ t('addArtist.profileHint') }}</FieldDescription>
-          </Field>
-
           <FieldSet>
             <FieldLegend variant="label">
               {{ t('artist.releaseTypes') }}

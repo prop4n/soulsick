@@ -1,7 +1,7 @@
 """One track of an album downloaded by hand: identified, tagged, shelved; the album shows as partial."""
 
 from fakes import TRACKS, peer_with_album, tiny_flac
-from test_flow import ctx, wait_for  # noqa: F401
+from test_flow import ctx, hunt_only, wait_for  # noqa: F401
 
 from soulsick.models import Transfer
 
@@ -161,7 +161,7 @@ async def test_replace_one_lower_quality_track(ctx):  # noqa: F811
     partial.files = [f for f in partial.files if "In Bloom" not in f.filename]
     await client.patch(f"/api/albums/{rid}", json={"monitored": True})
     engine.results = [partial, peer_with_album("fullpeer")]
-    await core.hunter.hunt(rid)
+    await hunt_only(core, rid)
     album = (await client.get(f"/api/albums/{rid}")).json()
     by_user = {c["username"]: c["id"] for c in album["candidates"]}
     await client.post(f"/api/candidates/{by_user['partialpeer']}/approve")

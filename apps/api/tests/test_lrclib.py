@@ -84,7 +84,7 @@ async def test_bouton_de_l_album(ctx):  # noqa: F811
     client, core, engine, env = ctx
     await client.post("/api/auth/setup", json={"username": "admin", "password": "motdepasse"})
     r = await client.post("/api/artists", json={
-        "mbid": "5b11f4ce-a62d-471e-81fc-a69a8278c7da", "mode": "validation", "primary_types": ["album"],
+        "mbid": "5b11f4ce-a62d-471e-81fc-a69a8278c7da", "primary_types": ["album"],
     })
     rid = next(rg["id"] for rg in (await client.get(f"/api/artists/{r.json()['id']}")).json()["release_groups"]
                if rg["title"] == "Nevermind")

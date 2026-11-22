@@ -16,7 +16,7 @@ import { cn } from '@/lib/utils'
 const { t } = useI18n()
 const { data: artists, isPending } = useArtists()
 const q = ref('')
-const filter = ref<'all' | 'followed' | 'paused' | 'attention' | 'auto'>('all')
+const filter = ref<'all' | 'followed' | 'paused' | 'attention'>('all')
 const addOpen = ref(false)
 
 const list = computed(() => {
@@ -28,8 +28,6 @@ const list = computed(() => {
       return a.monitored
     if (filter.value === 'attention')
       return a.stats.attention > 0
-    if (filter.value === 'auto')
-      return a.mode === 'auto'
     if (filter.value === 'paused')
       return !a.monitored
     return true
@@ -71,9 +69,6 @@ function completion(a: { stats: { imported: number, monitored: number } }) {
         </ToggleGroupItem>
         <ToggleGroupItem value="attention">
           {{ t('artists.filters.attention') }}
-        </ToggleGroupItem>
-        <ToggleGroupItem value="auto">
-          {{ t('artists.filters.auto') }}
         </ToggleGroupItem>
       </ToggleGroup>
       <span class="font-mono text-[11.5px] text-faint tnum sm:ml-auto">{{ list.length }} / {{ artists?.length ?? 0 }}</span>
@@ -132,7 +127,7 @@ function completion(a: { stats: { imported: number, monitored: number } }) {
           <div class="flex items-center gap-2 text-[11.5px] text-faint">
             <span class="font-mono tnum">{{ a.stats.imported }}/{{ a.stats.monitored }}</span>
             <span>{{ t('artists.inLibrary') }}</span>
-            <span class="ml-auto">{{ !a.monitored ? t('artists.mode.paused') : t(`artists.mode.${a.mode}`) }}</span>
+            <span v-if="!a.monitored" class="ml-auto">{{ t('artists.mode.paused') }}</span>
           </div>
         </div>
       </RouterLink>

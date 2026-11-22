@@ -84,7 +84,9 @@ class Artist(Base):
     country: Mapped[str | None] = mapped_column(String, nullable=True)
     type: Mapped[str | None] = mapped_column(String, nullable=True)
     monitored: Mapped[bool] = mapped_column(Boolean, default=True)
-    mode: Mapped[str] = mapped_column(String, default=ArtistMode.VALIDATION)
+    # No longer read: every album is downloaded automatically, with the profile chosen in the
+    # settings. Kept because the column is NOT NULL in existing databases
+    mode: Mapped[str] = mapped_column(String, default=ArtistMode.AUTO)
     quality_profile_id: Mapped[int | None] = mapped_column(ForeignKey("quality_profile.id"), nullable=True)
     # Types primaires suivis (album, ep, single) et secondaires acceptés (live, compilation…)
     primary_types: Mapped[list[str]] = mapped_column(JSON, default=lambda: ["album", "ep"])

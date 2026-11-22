@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { ArtistDetail, ArtistMode, ReleaseGroup } from '@/lib/types'
+import type { ArtistDetail, ReleaseGroup } from '@/lib/types'
 import { ArrowLeftIcon, ChevronDownIcon, ExternalLinkIcon, RadarIcon, RefreshCwIcon, Trash2Icon } from '@lucide/vue'
 import { useMutation, useQueryClient } from '@tanstack/vue-query'
 import { computed, ref } from 'vue'
@@ -35,13 +35,12 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import { Field, FieldLabel } from '@/components/ui/field'
-import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Switch } from '@/components/ui/switch'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { useCoverAccent } from '@/composables/coverAccent'
-import { useArtist, useEvents, useProfiles } from '@/composables/queries'
+import { useArtist, useEvents } from '@/composables/queries'
 import { api } from '@/lib/api'
 import { ago, year } from '@/lib/format'
 import { RELEASE_TYPES, releaseTypeLabel } from '@/lib/status'
@@ -54,7 +53,6 @@ const router = useRouter()
 const qc = useQueryClient()
 const id = computed(() => Number(route.params.id))
 const { data: artist, isPending } = useArtist(id)
-const { data: profiles } = useProfiles()
 const { data: events } = useEvents(computed(() => ({ artist_id: id.value, limit: 60 })))
 const showIgnored = ref(true)
 
@@ -214,7 +212,7 @@ const accent = useCoverAccent(leadCover)
       </header>
 
       <!-- Follow settings, inline: no hidden page -->
-      <section class="grid gap-5 rounded-xl bg-card/60 p-5 ring-1 ring-white/[0.03] backdrop-blur-xl md:grid-cols-[auto_auto_minmax(0,1fr)_auto] md:items-end">
+      <section class="grid gap-5 rounded-xl bg-card/60 p-5 ring-1 ring-white/[0.03] backdrop-blur-xl md:grid-cols-[auto_minmax(0,1fr)] md:items-end">
         <Field orientation="horizontal" class="w-auto">
           <Switch
             id="mon"
@@ -224,25 +222,6 @@ const accent = useCoverAccent(leadCover)
           <FieldLabel for="mon" class="text-[13px]">
             {{ t('artist.active') }}
           </FieldLabel>
-        </Field>
-        <Field class="w-auto">
-          <FieldLabel class="legend">
-            {{ t('artist.decision') }}
-          </FieldLabel>
-          <ToggleGroup
-            :model-value="artist.mode"
-            type="single"
-            variant="outline"
-            size="sm"
-            @update:model-value="(v) => v && patch.mutate({ mode: v as ArtistMode })"
-          >
-            <ToggleGroupItem value="validation">
-              {{ t('artist.mode.validation') }}
-            </ToggleGroupItem>
-            <ToggleGroupItem value="auto">
-              {{ t('artist.mode.auto') }}
-            </ToggleGroupItem>
-          </ToggleGroup>
         </Field>
         <Field class="min-w-0">
           <FieldLabel class="legend">
@@ -260,26 +239,6 @@ const accent = useCoverAccent(leadCover)
               {{ releaseTypeLabel(key) }}
             </ToggleGroupItem>
           </ToggleGroup>
-        </Field>
-        <Field class="w-full md:w-52">
-          <FieldLabel class="legend">
-            {{ t('artist.profile') }}
-          </FieldLabel>
-          <Select
-            :model-value="artist.quality_profile_id ? String(artist.quality_profile_id) : undefined"
-            @update:model-value="(v) => patch.mutate({ quality_profile_id: Number(v) })"
-          >
-            <SelectTrigger size="sm" class="w-full">
-              <SelectValue :placeholder="t('common.default')" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectGroup>
-                <SelectItem v-for="p in profiles ?? []" :key="p.id" :value="String(p.id)">
-                  {{ p.name }}
-                </SelectItem>
-              </SelectGroup>
-            </SelectContent>
-          </Select>
         </Field>
       </section>
 

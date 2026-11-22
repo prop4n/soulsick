@@ -12,13 +12,11 @@ from ..messages import M, UserError, set_reason
 from ..models import (
     AlbumStatus,
     Artist,
-    ArtistMode,
     ArtistReleaseGroup,
     Candidate,
     CandidateStatus,
     Event,
     LibraryFile,
-    QualityProfile,
     Release,
     ReleaseGroup,
     SearchRun,
@@ -51,8 +49,6 @@ async def mb_search(q: str, core: Core = Depends(get_core)) -> list[dict]:
 
 class ArtistIn(BaseModel):
     mbid: str
-    mode: ArtistMode = ArtistMode.VALIDATION
-    quality_profile_id: int | None = None
     primary_types: list[str] = ["album", "ep"]
     secondary_types: list[str] = []
     monitor: Literal["none", "future", "all"] = "none"
@@ -62,8 +58,6 @@ class ArtistsIn(BaseModel):
     """Several artists followed at once, each with the same settings."""
 
     mbids: list[str] = Field(min_length=1, max_length=100)
-    mode: ArtistMode = ArtistMode.VALIDATION
-    quality_profile_id: int | None = None
     primary_types: list[str] = ["album", "ep"]
     secondary_types: list[str] = []
     monitor: Literal["none", "future", "all"] = "none"
@@ -71,8 +65,6 @@ class ArtistsIn(BaseModel):
 
 class ArtistPatch(BaseModel):
     monitored: bool | None = None
-    mode: ArtistMode | None = None
-    quality_profile_id: int | None = None
     primary_types: list[str] | None = None
     secondary_types: list[str] | None = None
 
@@ -137,8 +129,6 @@ async def add_artist(body: ArtistIn, core: Core = Depends(get_core)) -> dict:
     try:
         a = await core.catalog.add_artist(
             body.mbid,
-            mode=body.mode,
-            quality_profile_id=body.quality_profile_id,
             primary_types=body.primary_types,
             secondary_types=body.secondary_types,
             monitor=body.monitor,
@@ -156,8 +146,6 @@ async def add_artists(body: ArtistsIn, core: Core = Depends(get_core)) -> dict:
     mbids = list(dict.fromkeys(body.mbids))
     asyncio.create_task(core.catalog.add_artists(
         mbids,
-        mode=body.mode,
-        quality_profile_id=body.quality_profile_id,
         primary_types=body.primary_types,
         secondary_types=body.secondary_types,
         monitor=body.monitor,
@@ -195,15 +183,8 @@ async def patch_artist(aid: int, body: ArtistPatch, core: Core = Depends(get_cor
             setattr(a, k, v)
         await s.commit()
         await s.refresh(a)
-    profile_name = None
-    if changes.get("quality_profile_id"):
-        async with core.db.session() as s:
-            p = await s.get(QualityProfile, changes["quality_profile_id"])
-            profile_name = p.name if p else f"#{changes['quality_profile_id']}"
     labels = {
         "monitored": lambda v: M("artist.change.monitored_on" if v else "artist.change.monitored_off"),
-        "mode": lambda v: M("artist.change.mode", value=M("word.automatic" if v == "auto" else "word.ask_me")),
-        "quality_profile_id": lambda v: M("artist.change.profile", value=profile_name),
         "primary_types": lambda v: M("artist.change.primary_types", value=", ".join(v)),
         "secondary_types": lambda v: M("artist.change.secondary_types", value=", ".join(v) or M("word.none")),
     }

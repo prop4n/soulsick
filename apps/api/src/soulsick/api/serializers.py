@@ -26,8 +26,6 @@ def artist_dict(a: Artist, stats: dict | None = None) -> dict:
         "country": a.country,
         "type": a.type,
         "monitored": a.monitored,
-        "mode": a.mode,
-        "quality_profile_id": a.quality_profile_id,
         "primary_types": a.primary_types,
         "secondary_types": a.secondary_types,
         "added_at": iso(a.added_at),
@@ -58,7 +56,7 @@ def rg_dict(rg: ReleaseGroup, artist: Artist | None = None) -> dict:
         "updated_at": iso(rg.updated_at),
     }
     if artist is not None:
-        d["artist"] = {"id": artist.id, "name": artist.name, "mbid": artist.mbid, "mode": artist.mode}
+        d["artist"] = {"id": artist.id, "name": artist.name, "mbid": artist.mbid}
     return d
 
 

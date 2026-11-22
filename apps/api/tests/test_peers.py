@@ -8,7 +8,7 @@ async def test_peer_history_and_profile(ctx):  # noqa: F811
     client, core, engine, env = ctx
     await client.post("/api/auth/setup", json={"username": "admin", "password": "motdepasse"})
     r = await client.post("/api/artists", json={
-        "mbid": "5b11f4ce-a62d-471e-81fc-a69a8278c7da", "mode": "auto", "primary_types": ["album"], "monitor": "all",
+        "mbid": "5b11f4ce-a62d-471e-81fc-a69a8278c7da", "primary_types": ["album"], "monitor": "all",
     })
     aid = r.json()["id"]
     rid = next(rg["id"] for rg in (await client.get(f"/api/artists/{aid}")).json()["release_groups"]

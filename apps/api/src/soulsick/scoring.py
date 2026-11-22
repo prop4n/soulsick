@@ -4,6 +4,7 @@ Score sur 100 :
 - 50 pts : correspondance avec la tracklist MusicBrainz (titres, nombre de pistes, durées)
 - 30 pts : rang du format dans le profil qualité
 - 20 pts : disponibilité du pair (ce qu'il a fait les fois d'avant, slot libre, file d'attente, vitesse)
+Un dossier plus lourd que la taille préférée perd OVERSIZE_PENALTY points.
 """
 
 import re
@@ -149,6 +150,11 @@ def peer_points(c: ScoredCandidate, record: str | None = None) -> tuple[float, d
     }
 
 
+# What a folder heavier than the preferred size loses: more than a better format or a better peer
+# can win back, so that a lighter folder of the same album comes first
+OVERSIZE_PENALTY = 40.0
+
+
 def score_candidate(
     c: ScoredCandidate,
     releases: list[ReleaseOption],
@@ -157,6 +163,7 @@ def score_candidate(
     min_match: float = 0.6,
     artist_hint: str = "",
     record: str | None = None,
+    preferred_album_mb: int = 0,
 ) -> ScoredCandidate:
     # Format : c'est le fichier le moins bon qui fixe la qualité de l'album
     formats = [detect_format(f.info) for f in c.audio_files]
@@ -205,6 +212,11 @@ def score_candidate(
     p_points, p_detail = peer_points(c, record)
     c.detail["peer"] = p_detail
     c.score = round(fmt_points + match_points + p_points, 1)
+    # Heavier than you prefer: still a candidate, only behind the lighter ones (taken when alone)
+    mb = round(sum(f.size or 0 for f in c.audio_files) / 1_000_000)
+    if preferred_album_mb and mb > preferred_album_mb:
+        c.detail["size"] = {"points": -OVERSIZE_PENALTY, "mb": mb, "preferred": preferred_album_mb}
+        c.score = round(max(0.0, c.score - OVERSIZE_PENALTY), 1)
 
     # Rejection reasons, most serious first
     if rank is None:
@@ -253,13 +265,14 @@ def rank_candidates(
     min_match: float = 0.6,
     artist_hint: str = "",
     records: dict[str, str] | None = None,
+    preferred_album_mb: int = 0,
 ) -> list[ScoredCandidate]:
     releases = unique_tracklists(releases)
     records = records or {}
     cands = [
         score_candidate(
             c, compatible(releases, len(c.audio_files)), profile_formats, max_missing_tracks, min_match, artist_hint,
-            records.get(c.username),
+            records.get(c.username), preferred_album_mb,
         )
         for c in group_results(results)
     ]

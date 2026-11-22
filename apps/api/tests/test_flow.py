@@ -1,4 +1,4 @@
-"""Parcours complet : compte admin → artiste → chasse → validation → téléchargement → import."""
+"""Parcours complet : compte admin → artiste → chasse → téléchargement → import."""
 
 import asyncio
 import os
@@ -32,6 +32,21 @@ async def ctx(tmp_path):
             yield client, core, engine, env
 
 
+async def hunt_only(core, rid):
+    """La chasse sans le départ automatique de la meilleure source : les sources restent
+    proposées, et le test en prend une à la main (« Prendre celle-ci », endpoint approve)."""
+    start = core.hunter._start_best
+
+    async def nothing(*_args):
+        return None
+
+    core.hunter._start_best = nothing
+    try:
+        await core.hunter.hunt(rid)
+    finally:
+        core.hunter._start_best = start
+
+
 async def wait_for(pred, timeout=5.0):
     for _ in range(int(timeout / 0.05)):
         if await pred():
@@ -57,11 +72,10 @@ async def test_full_flow(ctx):
     await client.post("/api/auth/setup", json={"username": "admin", "password": "motdepasse"})
 
     profiles = (await client.get("/api/profiles")).json()
-    assert profiles[0]["name"] == "Lossless"
+    assert profiles[0]["name"] == "CD quality"
 
     r = await client.post("/api/artists", json={
-        "mbid": "5b11f4ce-a62d-471e-81fc-a69a8278c7da", "mode": "validation",
-        "quality_profile_id": profiles[0]["id"], "primary_types": ["album"], "monitor": "all",
+        "mbid": "5b11f4ce-a62d-471e-81fc-a69a8278c7da", "primary_types": ["album"], "monitor": "all",
     })
     assert r.status_code == 200, r.text
     aid = r.json()["id"]
@@ -75,14 +89,12 @@ async def test_full_flow(ctx):
     engine.results = [peer_with_album()]
     await core.hunter.hunt(rid)
 
+    # Nothing to approve: the best source starts on its own
     album = (await client.get(f"/api/albums/{rid}")).json()
-    assert album["status"] == "pending_approval"
     best = album["candidates"][0]
-    assert best["status"] == "proposed" and best["format"] == "flac"
+    assert best["status"] == "chosen" and best["format"] == "flac"
     assert best["score_detail"]["match"]["tracks_matched"] == 3
-
-    r = await client.post(f"/api/candidates/{best['id']}/approve")
-    assert r.status_code == 200
+    assert len(engine.downloads) >= 3
 
     async def imported():
         a = (await client.get(f"/api/albums/{rid}")).json()
@@ -98,34 +110,15 @@ async def test_full_flow(ctx):
     assert not any(os.scandir(env.downloads_dir / f"album-{rid}"))
 
     kinds = [e["kind"] for e in (await client.get("/api/events", params={"release_group_id": rid})).json()]
-    for k in ("hunt.started", "hunt.scored", "hunt.awaiting_approval", "download.started",
-              "download.complete", "import.done"):
+    for k in ("hunt.started", "hunt.scored", "download.started", "download.complete", "import.done"):
         assert k in kinds, k
-
-
-async def test_auto_mode_downloads_without_approval(ctx):
-    client, core, engine, env = ctx
-    await client.post("/api/auth/setup", json={"username": "admin", "password": "motdepasse"})
-    r = await client.post("/api/artists", json={
-        "mbid": "5b11f4ce-a62d-471e-81fc-a69a8278c7da", "mode": "auto", "primary_types": ["album"], "monitor": "all",
-    })
-    aid = r.json()["id"]
-    rid = next(rg["id"] for rg in (await client.get(f"/api/artists/{aid}")).json()["release_groups"]
-               if rg["title"] == "Nevermind")
-    engine.results = [peer_with_album()]
-    await core.hunter.hunt(rid)
-    assert len(engine.downloads) >= 3
-
-    async def imported():
-        return (await client.get(f"/api/albums/{rid}")).json()["status"] == "imported"
-
-    await wait_for(imported)
+    assert "hunt.awaiting_approval" not in kinds
 
 
 async def test_no_candidate_keeps_wanted_with_reason(ctx):
     client, core, engine, env = ctx
     await client.post("/api/auth/setup", json={"username": "admin", "password": "motdepasse"})
-    r = await client.post("/api/artists", json={"mbid": "x", "mode": "auto", "primary_types": ["album"], "monitor": "all"})
+    r = await client.post("/api/artists", json={"mbid": "x", "primary_types": ["album"], "monitor": "all"})
     aid = r.json()["id"]
     rid = next(rg["id"] for rg in (await client.get(f"/api/artists/{aid}")).json()["release_groups"]
                if rg["title"] == "Nevermind")

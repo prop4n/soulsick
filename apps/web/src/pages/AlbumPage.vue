@@ -248,7 +248,6 @@ const dismiss = useMutation({
             </h1>
             <p class="text-[14px] text-muted-foreground">
               {{ album.artist?.name }}
-              <span class="text-faint">· {{ t(`artists.mode.${album.artist?.mode ?? 'validation'}`) }}</span>
             </p>
           </div>
 

@@ -12,7 +12,7 @@ from datetime import UTC, datetime, timedelta
 
 from fakes import TRACKS, peer_with_album
 from sqlalchemy import select
-from test_flow import ctx, wait_for  # noqa: F401
+from test_flow import ctx, hunt_only, wait_for  # noqa: F401
 
 from soulsick.models import Candidate, Event, Transfer
 from soulsick.scoring import RemoteFile
@@ -27,14 +27,14 @@ async def _approved(client, core, engine, peers, chosen, extra=()):
     settings.hunter.race_seconds = 1
     await core.settings.save(settings)
     core.hunter.race_poll = 0.02
-    r = await client.post("/api/artists", json={"mbid": "x", "mode": "validation", "primary_types": ["album"], "monitor": "none"})
+    r = await client.post("/api/artists", json={"mbid": "x", "primary_types": ["album"], "monitor": "none"})
     aid = r.json()["id"]
     rid = next(rg["id"] for rg in (await client.get(f"/api/artists/{aid}")).json()["release_groups"]
                if rg["title"] == "Nevermind")
     for f in FILES:
         engine.script[f"{chosen}:{f}"] = ["hold"]  # accepté, jamais envoyé
     engine.results = [*extra, *(peer_with_album(p) for p in peers)]
-    await core.hunter.hunt(rid)
+    await hunt_only(core, rid)
     cid = next(c["id"] for c in (await client.get(f"/api/albums/{rid}")).json()["candidates"] if c["username"] == chosen)
     await client.post(f"/api/candidates/{cid}/approve")
     async with core.db.session() as s:  # demandés il y a 2 minutes, comme dans le cas réel

@@ -4,7 +4,7 @@ import asyncio
 import os
 
 from fakes import TRACKS, peer_with_album
-from test_flow import ctx, wait_for  # noqa: F401
+from test_flow import ctx, hunt_only, wait_for  # noqa: F401
 
 from soulsick.models import Transfer
 from sqlalchemy import select
@@ -12,15 +12,16 @@ from sqlalchemy import select
 FILE2 = f"02 - {TRACKS[1][0]}.flac"
 
 
-async def _setup(client, core, engine, mode="validation"):
+async def _setup(client, core, engine, start=True):
+    """`start=False` : la chasse s'arrête aux sources proposées, le test en prend une à la main."""
     await client.post("/api/auth/setup", json={"username": "admin", "password": "motdepasse"})
-    r = await client.post("/api/artists", json={"mbid": "x", "mode": mode, "primary_types": ["album"], "monitor": "all"})
+    r = await client.post("/api/artists", json={"mbid": "x", "primary_types": ["album"], "monitor": "all"})
     aid = r.json()["id"]
     rid = next(rg["id"] for rg in (await client.get(f"/api/artists/{aid}")).json()["release_groups"]
                if rg["title"] == "Nevermind")
     engine.results = [peer_with_album()]
     core.hunter.retry_delays = [0.05, 0.05]
-    await core.hunter.hunt(rid)
+    await (core.hunter.hunt(rid) if start else hunt_only(core, rid))
     return rid
 
 
@@ -36,7 +37,7 @@ async def _status(client, rid):
 async def test_echec_temporaire_relance_automatiquement(ctx):  # noqa: F811
     client, core, engine, env = ctx
     engine.script[FILE2] = ["fail"]  # 1er essai refusé, 2e essai OK
-    rid = await _setup(client, core, engine, mode="auto")
+    rid = await _setup(client, core, engine)
 
     async def imported():
         return await _status(client, rid) == "imported"
@@ -52,7 +53,7 @@ async def test_echec_temporaire_relance_automatiquement(ctx):  # noqa: F811
 async def test_relance_manuelle_reutilise_la_ligne(ctx):  # noqa: F811
     client, core, engine, env = ctx
     engine.script[FILE2] = ["fail", "fail", "fail"]  # épuise les essais automatiques
-    rid = await _setup(client, core, engine)
+    rid = await _setup(client, core, engine, start=False)
     best = (await client.get(f"/api/albums/{rid}")).json()["candidates"][0]
     await client.post(f"/api/candidates/{best['id']}/approve")
 
@@ -78,7 +79,7 @@ async def test_relance_manuelle_reutilise_la_ligne(ctx):  # noqa: F811
 async def test_reprendre_un_candidat_ne_retelecharge_que_le_manquant(ctx):  # noqa: F811
     client, core, engine, env = ctx
     engine.script[FILE2] = ["fail", "fail", "fail"]
-    rid = await _setup(client, core, engine)
+    rid = await _setup(client, core, engine, start=False)
     cid = (await client.get(f"/api/albums/{rid}")).json()["candidates"][0]["id"]
     await client.post(f"/api/candidates/{cid}/approve")
 
@@ -116,7 +117,7 @@ async def test_nouvelle_chasse_reprend_le_dossier_de_la_meme_source(ctx):  # noq
     dans un nouveau dossier à chaque fois, jusqu'à remplir le disque)."""
     client, core, engine, env = ctx
     engine.script[FILE2] = ["fail", "fail", "fail"]
-    rid = await _setup(client, core, engine, mode="auto")
+    rid = await _setup(client, core, engine)
     await _gave_up(client, rid)
     assert len(_album_dirs(env, rid)) == 1
 
@@ -142,7 +143,7 @@ async def test_nouvelle_chasse_reprend_le_dossier_de_la_meme_source(ctx):  # noq
 async def test_arrivee_tardive_apres_abandon(ctx):  # noqa: F811
     client, core, engine, env = ctx
     engine.script[FILE2] = ["fail", "fail", "fail"]
-    rid = await _setup(client, core, engine)
+    rid = await _setup(client, core, engine, start=False)
     cid = (await client.get(f"/api/albums/{rid}")).json()["candidates"][0]["id"]
     await client.post(f"/api/candidates/{cid}/approve")
 
@@ -170,7 +171,7 @@ async def test_reprise_au_demarrage_reactive_le_candidat(ctx):  # noqa: F811
     """Un fichier relancé au démarrage pour un candidat abandonné : l'album doit redevenir « téléchargement »."""
     client, core, engine, env = ctx
     engine.script[FILE2] = ["fail", "fail", "fail", "hold"]
-    rid = await _setup(client, core, engine)
+    rid = await _setup(client, core, engine, start=False)
     cid = (await client.get(f"/api/albums/{rid}")).json()["candidates"][0]["id"]
     await client.post(f"/api/candidates/{cid}/approve")
 
@@ -196,14 +197,14 @@ async def test_source_remplacee_pendant_le_delai_plus_rien_ne_lui_est_demande(ct
     l'était, et restait "en file" chez un pair déjà quitté)."""
     client, core, engine, env = ctx
     await client.post("/api/auth/setup", json={"username": "admin", "password": "motdepasse"})
-    artist = {"mbid": "x", "mode": "validation", "primary_types": ["album"], "monitor": "all"}
+    artist = {"mbid": "x", "primary_types": ["album"], "monitor": "all"}
     aid = (await client.post("/api/artists", json=artist)).json()["id"]
     albums = (await client.get(f"/api/artists/{aid}")).json()["release_groups"]
     rid = next(rg["id"] for rg in albums if rg["title"] == "Nevermind")
     engine.results = [peer_with_album("goodpeer"), peer_with_album("otherpeer")]
     engine.script[f"goodpeer:{FILE2}"] = ["fail", "hold"]
     core.hunter.retry_delays = [0.4, 0.4]
-    await core.hunter.hunt(rid)
+    await hunt_only(core, rid)
     cands = (await client.get(f"/api/albums/{rid}")).json()["candidates"]
     good = next(c for c in cands if c["username"] == "goodpeer")
     other = next(c for c in cands if c["username"] == "otherpeer")

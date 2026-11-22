@@ -23,7 +23,7 @@ async def test_import_interrompu_apres_rangement_redevient_importe(ctx):  # noqa
     """Cas réel : soulsick redémarré pendant le scan de la bibliothèque qui finit un import. Les
     fichiers étaient rangés, mais l'album restait « importing » pour toujours (0 fichier affiché)."""
     client, core, engine, env = ctx
-    rid = await _setup(client, core, engine, mode="auto")
+    rid = await _setup(client, core, engine)
 
     async def imported():
         return await _status(client, rid) == "imported"
@@ -46,7 +46,7 @@ async def test_import_interrompu_avant_rangement_est_relance(ctx):  # noqa: F811
         return None
 
     core.importer.import_candidate = killed
-    rid = await _setup(client, core, engine, mode="auto")
+    rid = await _setup(client, core, engine)
 
     async def received():
         async with core.db.session() as s:
@@ -72,7 +72,7 @@ async def test_deux_albums_demandent_le_meme_fichier(ctx):  # noqa: F811
     second album attendait un fichier qui n'arrivait jamais dans son dossier."""
     client, core, engine, env = ctx
     engine.script = {name: ["hold"] for name in ("01 - Smells Like Teen Spirit.flac",)}
-    rid = await _setup(client, core, engine)  # validation : rien ne démarre seul
+    rid = await _setup(client, core, engine, start=False)  # rien ne démarre seul
     first = (await client.get(f"/api/albums/{rid}")).json()["candidates"][0]["id"]
 
     # La seconde fiche : même artiste, autre identifiant, et le même dossier chez le même pair

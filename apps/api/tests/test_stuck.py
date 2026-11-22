@@ -4,7 +4,7 @@ from datetime import timedelta
 
 from fakes import TRACKS, peer_with_album
 from sqlalchemy import select
-from test_flow import ctx, wait_for  # noqa: F401
+from test_flow import ctx, hunt_only, wait_for  # noqa: F401
 
 from soulsick.models import Transfer, TransferState
 from soulsick.slsk.engine import TransferUpdate
@@ -15,12 +15,12 @@ FILE2 = f"02 - {TRACKS[1][0]}.flac"
 async def _album_waiting_on_file2(client, core, engine):
     """goodpeer livre les pistes 1 et 3, la 2 reste chez lui ; otherpeer a tout l'album."""
     await client.post("/api/auth/setup", json={"username": "admin", "password": "motdepasse"})
-    r = await client.post("/api/artists", json={"mbid": "x", "mode": "validation", "primary_types": ["album"], "monitor": "all"})
+    r = await client.post("/api/artists", json={"mbid": "x", "primary_types": ["album"], "monitor": "all"})
     rid = next(rg["id"] for rg in (await client.get(f"/api/artists/{r.json()['id']}")).json()["release_groups"]
                if rg["title"] == "Nevermind")
     engine.results = [peer_with_album("goodpeer"), peer_with_album("otherpeer")]
     engine.script[f"goodpeer:{FILE2}"] = ["hold"]
-    await core.hunter.hunt(rid)
+    await hunt_only(core, rid)
     cands = (await client.get(f"/api/albums/{rid}")).json()["candidates"]
     good = next(c for c in cands if c["username"] == "goodpeer")
     other = next(c for c in cands if c["username"] == "otherpeer")
@@ -179,7 +179,7 @@ async def test_retour_a_un_pair_deja_quitte_l_album_est_range(ctx):  # noqa: F81
     client, core, engine, env = ctx
     file3 = f"03 - {TRACKS[2][0]}.flac"
     await client.post("/api/auth/setup", json={"username": "admin", "password": "motdepasse"})
-    r = await client.post("/api/artists", json={"mbid": "x", "mode": "validation", "primary_types": ["album"], "monitor": "all"})
+    r = await client.post("/api/artists", json={"mbid": "x", "primary_types": ["album"], "monitor": "all"})
     rid = next(rg["id"] for rg in (await client.get(f"/api/artists/{r.json()['id']}")).json()["release_groups"]
                if rg["title"] == "Nevermind")
     engine.results = [peer_with_album("goodpeer"), peer_with_album("otherpeer")]
@@ -187,7 +187,7 @@ async def test_retour_a_un_pair_deja_quitte_l_album_est_range(ctx):  # noqa: F81
     engine.script[f"goodpeer:{FILE2}"] = ["hold"]
     engine.script[f"goodpeer:{file3}"] = ["hold"]
     engine.script[f"otherpeer:{FILE2}"] = ["hold"]
-    await core.hunter.hunt(rid)
+    await hunt_only(core, rid)
     cands = (await client.get(f"/api/albums/{rid}")).json()["candidates"]
     good = next(c for c in cands if c["username"] == "goodpeer")
     other = next(c for c in cands if c["username"] == "otherpeer")
