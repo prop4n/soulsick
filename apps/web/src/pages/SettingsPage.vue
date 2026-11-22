@@ -305,6 +305,24 @@ const removeProfile = useMutation({
               <FieldDescription>{{ t('settings.hunter.stuckAttemptsHint') }}</FieldDescription>
             </Field>
           </div>
+          <FieldSeparator />
+          <FieldDescription>{{ t('settings.hunter.raceIntro') }}</FieldDescription>
+          <div class="grid gap-4 sm:grid-cols-2">
+            <Field>
+              <FieldLabel for="hrp">
+                {{ t('settings.hunter.racePeers') }}
+              </FieldLabel>
+              <Input id="hrp" v-model.number="form.hunter.race_peers" type="number" min="1" class="font-mono" />
+              <FieldDescription>{{ t('settings.hunter.racePeersHint') }}</FieldDescription>
+            </Field>
+            <Field>
+              <FieldLabel for="hrs">
+                {{ t('settings.hunter.raceSeconds') }}
+              </FieldLabel>
+              <Input id="hrs" v-model.number="form.hunter.race_seconds" type="number" min="1" class="font-mono" />
+              <FieldDescription>{{ t('settings.hunter.raceSecondsHint') }}</FieldDescription>
+            </Field>
+          </div>
         </FieldGroup>
       </TabsContent>
 
