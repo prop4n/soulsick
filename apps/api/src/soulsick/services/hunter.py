@@ -90,6 +90,10 @@ class HunterService:
         # Sources whose first track is being tried (see _race): judged by the race, not one by one
         self._racing: set[int] = set()
         self.race_poll = 1.0
+        # Silent sources being raced, and the replacements already tried for each
+        self._relieving: set[int] = set()
+        self._relief_tried: dict[int, set[int]] = {}
+        self.relief_poll = 5.0
         self.current: dict | None = None
         self.last_run_at: datetime | None = None
         self.next_run_at: datetime | None = None
@@ -558,27 +562,8 @@ class HunterService:
                 release_group_id=rg_id, candidate_id=ids[0], data={"candidates": list(probes)},
             )
             t0 = time.monotonic()
-            alive = list(probes)
-            while probes:
-                async with self.core.db.session() as s:
-                    rows = {
-                        t.id: t for t in
-                        (await s.execute(select(Transfer).where(Transfer.id.in_(probes.values())))).scalars()
-                    }
-                sent = [
-                    cid for cid, tid in probes.items()
-                    if rows[tid].state == TransferState.COMPLETE or rows[tid].started_at or rows[tid].bytes_transferred
-                ]
-                alive = [
-                    cid for cid, tid in probes.items()
-                    if rows[tid].state not in (TransferState.FAILED, TransferState.ABORTED)
-                ]
-                if sent:
-                    winner = sent[0]  # in rank order: on a tie, the better source
-                    break
-                if not alive or time.monotonic() - t0 >= seconds:
-                    break
-                await asyncio.sleep(self.race_poll)
+            sent, alive = await self._first_to_send({cid: [tid] for cid, tid in probes.items()}, seconds)
+            winner = sent[0] if sent else None  # in rank order: on a tie, the better source
             elapsed = round(time.monotonic() - t0)
             if winner is not None:
                 await self.core.journal.emit(
@@ -603,6 +588,181 @@ class HunterService:
                 await self._give_back(cid, M("reason.race_lost", peer=names.get(winner or -1, "?")) if sent
                                       else M("reason.race_kept", peer=names.get(keep or ids[0], "?")))
         await self.start_download(ids[0] if keep is None else keep, by="auto")
+
+    async def _first_to_send(self, watch: dict[int, list[int]], seconds: float) -> tuple[list[int], list[int]]:
+        """Waits until one of the sources sends (its first bytes, not just a yes), all of them
+        refused, or `seconds` passed. `watch`: each source and its files, in priority order.
+        Returns the sources that sent and the ones still waiting, in that order."""
+        t0 = time.monotonic()
+        sent: list[int] = []
+        alive = list(watch)
+        tids = [tid for ts in watch.values() for tid in ts]
+        while watch:
+            async with self.core.db.session() as s:
+                rows = {t.id: t for t in (await s.execute(select(Transfer).where(Transfer.id.in_(tids)))).scalars()}
+            sent = [
+                cid for cid, ts in watch.items()
+                if any(t in rows and (rows[t].state == TransferState.COMPLETE or rows[t].started_at
+                                      or rows[t].bytes_transferred) for t in ts)
+            ]
+            alive = [
+                cid for cid, ts in watch.items()
+                if any(t in rows and rows[t].state not in (TransferState.FAILED, TransferState.ABORTED) for t in ts)
+            ]
+            if sent or not alive or time.monotonic() - t0 >= seconds:
+                break
+            await asyncio.sleep(self.race_poll)
+        return sent, alive
+
+    # --- Relief: a source that sends nothing is raced by others ------------
+
+    async def relief_loop(self) -> None:
+        while True:
+            try:
+                await self.check_silent()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                log.exception("relief loop")
+            await asyncio.sleep(self.relief_poll)
+
+    async def check_silent(self) -> None:
+        """A source that has sent nothing `race_seconds` after its files were asked (accepted
+        or not) gets the race too: its first track is asked from other sources of the same
+        edition and in the same format, while it keeps its place. Measured on the
+        homelab: of the sources that ever sent, 92 % did within a minute, none after 5."""
+        cfg = (await self.core.settings.get()).hunter
+        if cfg.race_peers < 2:
+            return
+        limit = datetime.now(UTC) - timedelta(seconds=cfg.race_seconds)
+        silent: list[int] = []
+        async with self.core.db.session() as s:
+            chosen = list((await s.execute(select(Candidate).where(Candidate.status == CandidateStatus.CHOSEN))).scalars())
+            for c in chosen:
+                if c.id in self._racing or c.id in self._relieving:
+                    continue
+                ts = list((await s.execute(select(Transfer).where(Transfer.candidate_id == c.id))).scalars())
+                if not ts or any(t.state == TransferState.PAUSED for t in ts):
+                    continue  # paused by you: not a silent peer
+                if any(t.state == TransferState.COMPLETE or t.started_at or t.bytes_transferred for t in ts):
+                    continue  # it sends (or did): slow is another matter
+                if all(t.state in TERMINAL for t in ts):
+                    continue
+                if max(_aware(t.requested_at or t.created_at) for t in ts) > limit:
+                    continue
+                silent.append(c.id)
+        for cid in silent:
+            await self._relieve(cid, cfg)
+
+    async def _replacements(self, candidate_id: int, n: int) -> list[int]:
+        """Other sources for the same edition and in the same format (a better one is heavier:
+        FLAC 24-bit weighs about 4 times FLAC 16-bit), not tried for it
+        yet, one per peer, none that stayed silent last time; best score first."""
+        async with self.core.db.session() as s:
+            inc = await s.get(Candidate, candidate_id)
+            if not inc:
+                return []
+            props = list((await s.execute(
+                select(Candidate).where(
+                    Candidate.release_group_id == inc.release_group_id,
+                    Candidate.status == CandidateStatus.PROPOSED,
+                    Candidate.username != inc.username,
+                ).order_by(Candidate.score.desc())
+            )).scalars())
+            username, release, fmt = inc.username, inc.matched_release_id, inc.format
+        tried = self._relief_tried.setdefault(candidate_id, set())
+        props = [
+            c for c in props
+            if c.id not in tried and c.id not in self._racing
+            and (release is None or c.matched_release_id == release)
+            and c.format == fmt
+        ]
+        records = await self.core.peers.track_records({c.username for c in props})
+        out: list[int] = []
+        peers = {username}
+        for c in props:
+            if c.username in peers or records.get(c.username) == SILENT:
+                continue
+            out.append(c.id)
+            peers.add(c.username)
+            if len(out) >= n:
+                break
+        return out
+
+    async def _relieve(self, candidate_id: int, cfg) -> None:
+        if candidate_id in self._relieving:
+            return
+        subs = await self._replacements(candidate_id, cfg.race_peers)
+        if candidate_id in self._relieving:
+            return  # started meanwhile (the loop and a direct call)
+        if not subs:
+            return  # nobody else (left): it keeps waiting, as before
+        self._relief_tried[candidate_id].update(subs)
+        self._relieving.add(candidate_id)
+        self._racing.update(subs)
+        asyncio.create_task(self._relief_race(candidate_id, subs, cfg.race_seconds))
+
+    async def _relief_race(self, candidate_id: int, subs: list[int], seconds: float) -> None:
+        """The silent source and its replacements, at once. It sends first: it keeps the album.
+        A replacement sends first: the album goes to it and the silent source is dropped (and
+        remembered as silent). Nobody: the replacements are given back, and the next round tries
+        the following ones."""
+        winner: int | None = None
+        names: dict[int, str] = {}
+        try:
+            probes = {cid: tid for cid in subs if (tid := await self._probe(cid)) is not None}
+            async with self.core.db.session() as s:
+                inc = await s.get(Candidate, candidate_id)
+                rg = await s.get(ReleaseGroup, inc.release_group_id) if inc else None
+                artist = await s.get(Artist, rg.artist_id) if rg else None
+                assert inc and rg and artist
+                names = {c.id: c.username for c in (await s.execute(
+                    select(Candidate).where(Candidate.id.in_([candidate_id, *subs]))
+                )).scalars()}
+                own = list((await s.execute(select(Transfer.id).where(Transfer.candidate_id == candidate_id))).scalars())
+                rg_id, label = rg.id, f"{artist.name} – {rg.title}"
+            await self.core.journal.emit(
+                "download.relief_started",
+                M("download.relief_started", label=label, peer=names[candidate_id], seconds=round(seconds),
+                  n=len(probes), peers=", ".join(names[c] for c in probes)),
+                release_group_id=rg_id, candidate_id=candidate_id, data={"candidates": list(probes)},
+            )
+            t0 = time.monotonic()
+            # The silent source first: on a tie, it keeps the album
+            sent, _ = await self._first_to_send({candidate_id: own} | {c: [t] for c, t in probes.items()}, seconds)
+            winner = sent[0] if sent else None
+            elapsed = round(time.monotonic() - t0)
+            if winner is None:
+                await self.core.journal.emit(
+                    "download.relief_none",
+                    M("download.relief_none", label=label, n=len(probes), seconds=elapsed, peer=names[candidate_id]),
+                    level="warning", release_group_id=rg_id, candidate_id=candidate_id,
+                )
+            elif winner == candidate_id:
+                await self.core.journal.emit(
+                    "download.relief_kept", M("download.relief_kept", label=label, peer=names[candidate_id]),
+                    release_group_id=rg_id, candidate_id=candidate_id,
+                )
+            else:
+                await self.core.journal.emit(
+                    "download.relieved",
+                    M("download.relieved", label=label, old=names[candidate_id], new=names[winner], seconds=elapsed),
+                    release_group_id=rg_id, candidate_id=winner, data={"replaced": candidate_id, "seconds": elapsed},
+                )
+        except Exception:
+            log.exception("relief")
+            winner = None
+        finally:
+            self._racing.difference_update(subs)
+            self._relieving.discard(candidate_id)
+        for cid in subs:
+            if cid != winner:
+                await self._give_back(cid, M("reason.race_lost", peer=names.get(winner or -1, "?")) if winner
+                                      else M("reason.race_kept", peer=names.get(candidate_id, "?")))
+        if winner is not None and winner != candidate_id:
+            await self._drop_source(candidate_id, M("reason.relieved", peer=names[winner]))
+            self._relief_tried.pop(candidate_id, None)
+            await self.start_download(winner, by="auto")
 
     async def _probe(self, candidate_id: int) -> int | None:
         """Asks only the first track of a source; returns its transfer."""

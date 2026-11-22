@@ -102,6 +102,7 @@ class Core:
         if not self.env.disable_engine:
             await self.restart_engine()
             self._tasks.append(asyncio.create_task(self.hunter.loop()))
+            self._tasks.append(asyncio.create_task(self.hunter.relief_loop()))
             self._tasks.append(asyncio.create_task(self._sync_loop()))
             self._tasks.append(asyncio.create_task(self._queue_loop()))
             self._tasks.append(asyncio.create_task(self._ready_loop()))
