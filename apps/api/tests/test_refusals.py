@@ -28,6 +28,11 @@ async def _downloading(client, core, engine, mode="validation"):
     rid = next(rg["id"] for rg in albums if rg["title"] == "Nevermind")
     engine.results = [peer_with_album("goodpeer"), peer_with_album("otherpeer")]
     core.hunter.retry_delays = [0.05, 0.05]
+    # goodpeer seul, sans course sur la première piste (voir test_race.py) : ce qui est testé
+    # ici, c'est ce qui suit le choix d'une source
+    settings = await core.settings.get()
+    settings.hunter.race_peers = 1
+    await core.settings.save(settings)
     await core.hunter.hunt(rid)
     if mode == "validation":
         cands = (await client.get(f"/api/albums/{rid}")).json()["candidates"]

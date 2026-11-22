@@ -103,6 +103,9 @@ async def test_batch_actions_on_transfers(ctx):  # noqa: F811
     rid = next(rg["id"] for rg in (await client.get(f"/api/artists/{r.json()['id']}")).json()["release_groups"]
                if rg["title"] == "Nevermind")
     engine.results = [peer_with_album(), peer_with_album("otherpeer")]
+    settings = await core.settings.get()
+    settings.hunter.race_peers = 1  # une seule source, sans course sur la première piste (voir test_race.py)
+    await core.settings.save(settings)
     for title, _ in TRACKS:
         engine.script[f"{TRACKS.index((title, _)) + 1:02d} - {title}.flac"] = ["hold"]
     await core.hunter.hunt(rid)

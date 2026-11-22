@@ -66,10 +66,10 @@ async def test_un_pair_qui_a_deja_envoye_passe_devant_un_inconnu(ctx):  # noqa: 
 
 
 async def test_une_source_remplacee_vite_ne_rend_pas_le_pair_muet(ctx):  # noqa: F811
-    """Abandonnée au bout de 2 minutes (tu as pris quelqu'un d'autre) : rien à en conclure."""
+    """Abandonnée au bout de 30 secondes (tu as pris quelqu'un d'autre) : rien à en conclure."""
     client, core, engine, env = ctx
     rid = await _album(client)
-    await _past_source(core, rid, "muet", sent=False, waited=timedelta(minutes=2))
+    await _past_source(core, rid, "muet", sent=False, waited=timedelta(seconds=30))
 
     assert await core.peers.track_records({"muet"}) == {}
     assert (await _order(client, core, engine, rid))[:2] == ["muet", "fiable"]
