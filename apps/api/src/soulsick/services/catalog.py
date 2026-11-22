@@ -214,6 +214,47 @@ class CatalogService:
             )
         return albums_added
 
+    async def ensure_artist(self, mbid: str, follow: bool) -> Artist:
+        """Artiste présent dans le catalogue. Créé ici : suivi seulement si demandé (seules ses
+        sorties à venir sont alors voulues). Un artiste déjà là n'est jamais dé-suivi."""
+        async with self.core.db.session() as s:
+            a = (await s.execute(select(Artist).where(Artist.mbid == mbid))).scalar_one_or_none()
+        if a is None:
+            a = await self.add_artist(
+                mbid, primary_types=["album", "ep"], secondary_types=[], follow=follow,
+            )
+        elif follow and not a.monitored:
+            await self.follow(a.id)
+        async with self.core.db.session() as s:
+            row = await s.get(Artist, a.id)
+            assert row
+            return row
+
+    async def ensure_album(self, mbid: str, artist_id: int) -> ReleaseGroup:
+        async with self.core.db.session() as s:
+            rg = (await s.execute(select(ReleaseGroup).where(ReleaseGroup.mbid == mbid))).scalar_one_or_none()
+            if rg is None:
+                # Sortie hors discographie officielle (bootleg, compilation…) : on la crée à la main
+                g = await self.core.mb.get_release_group(mbid)
+                rg = ReleaseGroup(
+                    mbid=mbid, artist_id=artist_id, title=g["title"], primary_type=g["primary_type"],
+                    secondary_types=g["secondary_types"], first_release_date=g["first_release_date"],
+                )
+                s.add(rg)
+                await s.flush()
+            linked = (
+                await s.execute(
+                    select(ArtistReleaseGroup).where(
+                        ArtistReleaseGroup.artist_id == artist_id, ArtistReleaseGroup.release_group_id == rg.id
+                    )
+                )
+            ).first()
+            if not linked:
+                s.add(ArtistReleaseGroup(artist_id=artist_id, release_group_id=rg.id))
+            await s.commit()
+            await s.refresh(rg)
+            return rg
+
     async def follow(self, artist_id: int) -> bool:
         """Follows an artist from now on: its upcoming releases are wanted, its past stays as it is.
 

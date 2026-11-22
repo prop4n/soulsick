@@ -63,6 +63,11 @@ class FakeMB(MusicBrainz):
     async def cover(self, kind, mbid, size=500):
         return None
 
+    async def artist_profile(self, mbid):
+        return {
+            "area": None, "begin_year": None, "type": None, "genres": [], "releases": [], "deezer_url": None,
+        }
+
     async def search_release_groups(self, artist, album, limit=5):
         if "nevermind" not in album.lower():
             return []

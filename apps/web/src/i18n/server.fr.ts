@@ -118,6 +118,7 @@ const serverFr: Record<string, string> = {
   'artist.removed_shared': 'Artiste retiré : {name} (les fichiers de la bibliothèque sont conservés ; {kept} sortie partagée reste chez l’autre artiste) | Artiste retiré : {name} (les fichiers de la bibliothèque sont conservés ; {kept} sorties partagées restent chez l’autre artiste)',
   'artist.updated': '{name} : {changes}',
   'artist.change.mode': 'mode {value}',
+  'discover.want_failed': 'Album demandé depuis Découvrir pas ajouté : {error}',
   'artist.followed': 'Tu suis {name} : {n} sortie à venir recherchée | Tu suis {name} : {n} sorties à venir recherchées',
   'artist.unfollowed': 'Tu ne suis plus {name} : ce que tu as demandé reste recherché',
   'artist.change.monitored_on': 'suivi réactivé',

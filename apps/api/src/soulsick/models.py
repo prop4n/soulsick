@@ -119,11 +119,21 @@ class SimilarArtist(Base):
 
 
 class DismissedArtist(Base):
-    """A recommendation you are not interested in: never proposed again."""
+    """A recommendation set aside: never proposed again, or not before `until` (passed for now)."""
 
     __tablename__ = "dismissed_artist"
     mbid: Mapped[str] = mapped_column(String, primary_key=True)
     dismissed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class DiscoverProfile(Base):
+    """What ListenBrainz says of an artist to discover: origin, genres, its best-known releases."""
+
+    __tablename__ = "discover_profile"
+    mbid: Mapped[str] = mapped_column(String, primary_key=True)
+    data: Mapped[dict] = mapped_column(JSON, default=dict)
+    fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
 class ReleaseGroup(Base):
