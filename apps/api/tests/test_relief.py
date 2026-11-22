@@ -73,6 +73,9 @@ async def test_une_source_qui_n_envoie_rien_est_relevee_sans_toi(ctx):  # noqa: 
     assert sorted(p.rsplit("\\", 1)[-1] for u, p, _ in engine.downloads if u == "fiable") == sorted(FILES)
     assert "download.relieved" in await _kinds(core)
     assert await core.peers.track_records({"muet"}) == {"muet": "silent"}  # retenu pour la prochaine fois
+    async with core.db.session() as s:  # annulés par soulsick, pas par toi
+        errors = {t.error for t in (await s.execute(select(Transfer).where(Transfer.username == "muet"))).scalars()}
+    assert errors == {"Sent nothing; fiable sent first and took over"}
 
 
 async def test_personne_ne_releve_la_source_garde_sa_place(ctx):  # noqa: F811
