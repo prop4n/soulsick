@@ -18,7 +18,6 @@ import FormatTag from '@/components/FormatTag.vue'
 import ImportReview from '@/components/ImportReview.vue'
 import LyricsTag from '@/components/LyricsTag.vue'
 import SignalChain from '@/components/SignalChain.vue'
-import StatusBadge from '@/components/StatusBadge.vue'
 import TrackCoverage from '@/components/TrackCoverage.vue'
 import TransferRow from '@/components/TransferRow.vue'
 import { Button } from '@/components/ui/button'
@@ -237,13 +236,11 @@ const dismiss = useMutation({
     </div>
 
     <template v-else-if="album">
-      <header class="grid gap-7 md:grid-cols-[208px_minmax(0,1fr)]">
+      <header class="grid gap-8 md:grid-cols-[208px_minmax(0,1fr)]">
         <CoverArt
           :mbid="album.mbid"
           :size="500"
-          :class="cn('w-full max-w-[208px] ring-1 ring-white/10', accent.active.value
-            ? 'shadow-[0_28px_70px_-18px_hsl(var(--cover-h)_var(--cover-s)_18%/0.9)]'
-            : 'shadow-[0_28px_70px_-22px_rgb(0_0_0/0.8)]')"
+          class="w-full max-w-[208px] shadow-[0_24px_48px_-24px_rgb(0_0_0/0.6)] ring-1 ring-border"
           :alt="album.title"
         />
         <div class="flex min-w-0 flex-col justify-end gap-4">
@@ -251,7 +248,7 @@ const dismiss = useMutation({
             <p class="legend">
               {{ typeLabel }} · {{ year(album.first_release_date) }}
             </p>
-            <h1 class="font-serif text-[44px] leading-[0.95] tracking-tight text-balance md:text-[54px]">
+            <h1 class="font-serif text-[48px] leading-[0.95] tracking-tight text-balance md:text-[56px]">
               {{ album.title }}
             </h1>
             <p class="text-[14px] text-muted-foreground">
@@ -259,11 +256,11 @@ const dismiss = useMutation({
             </p>
           </div>
 
-          <div class="flex flex-col gap-3 rounded-xl bg-card/55 p-4 ring-1 ring-white/[0.03] backdrop-blur-xl lg:flex-row lg:items-center lg:justify-between">
-            <div class="flex flex-col gap-2.5">
+          <div class="flex flex-col gap-4 rounded-xl border bg-card p-4 lg:flex-row lg:items-center lg:justify-between">
+            <div class="flex flex-col gap-3">
               <SignalChain :status="album.status" size="lg" labels />
-              <p class="flex flex-wrap items-center gap-2 text-[12.5px]">
-                <StatusBadge :status="album.status" />
+              <p class="flex flex-wrap items-baseline gap-2 text-[13px]">
+                <span class="font-medium text-foreground">{{ albumStatus(album.status).label }}</span>
                 <span class="text-muted-foreground">{{ album.status_reason ? serverText(album.status_reason, album.status_reason_t) : albumStatus(album.status).hint }}</span>
               </p>
             </div>
@@ -391,13 +388,13 @@ const dismiss = useMutation({
             {{ t('album.tabs.tracks') }}
           </TabsTrigger>
           <TabsTrigger value="candidates">
-            {{ t('album.tabs.candidates') }} <span class="ml-1 font-mono text-[11px] text-faint tnum">{{ album.candidates.length }}</span>
+            {{ t('album.tabs.candidates') }} <span class="ml-1 font-mono text-[12px] text-faint tnum">{{ album.candidates.length }}</span>
           </TabsTrigger>
           <TabsTrigger value="files">
-            {{ t('album.tabs.files') }} <span class="ml-1 font-mono text-[11px] text-faint tnum">{{ album.files.length }}</span>
+            {{ t('album.tabs.files') }} <span class="ml-1 font-mono text-[12px] text-faint tnum">{{ album.files.length }}</span>
           </TabsTrigger>
           <TabsTrigger value="transfers">
-            {{ t('album.tabs.transfers') }} <span class="ml-1 font-mono text-[11px] text-faint tnum">{{ album.transfers.length }}</span>
+            {{ t('album.tabs.transfers') }} <span class="ml-1 font-mono text-[12px] text-faint tnum">{{ album.transfers.length }}</span>
           </TabsTrigger>
           <TabsTrigger value="history">
             {{ t('album.tabs.history') }}
@@ -439,9 +436,9 @@ const dismiss = useMutation({
               :key="tr.id"
               class="grid grid-cols-[3rem_minmax(0,1fr)_auto_auto_auto] items-center gap-3 border-b px-4 py-2 text-[13px] last:border-b-0"
             >
-              <span class="font-mono text-[11.5px] text-faint tnum">{{ release.disc_count > 1 ? `${tr.disc}-` : '' }}{{ String(tr.position).padStart(2, '0') }}</span>
+              <span class="font-mono text-[12px] text-faint tnum">{{ release.disc_count > 1 ? `${tr.disc}-` : '' }}{{ String(tr.position).padStart(2, '0') }}</span>
               <span class="truncate">{{ tr.title }}<span v-if="tr.artist_credit && tr.artist_credit !== album.artist?.name" class="text-faint"> · {{ tr.artist_credit }}</span></span>
-              <span class="font-mono text-[11.5px] text-muted-foreground tnum">{{ ms(tr.length_ms) }}</span>
+              <span class="font-mono text-[12px] text-muted-foreground tnum">{{ ms(tr.length_ms) }}</span>
               <!-- Its lyrics, once shelved -->
               <span class="flex w-14 justify-end">
                 <LyricsTag v-if="lyricsByRecording.has(tr.recording_mbid)" :lyrics="lyricsByRecording.get(tr.recording_mbid)" />
@@ -452,7 +449,7 @@ const dismiss = useMutation({
                   <span
                     v-for="src in coverageByTrack.get(tr.id)!.sources.slice(0, 2)"
                     :key="src.transfer_id"
-                    :class="cn('inline-flex items-center gap-1.5 rounded-[4px] border px-1.5 py-px font-mono text-[11px]',
+                    :class="cn('inline-flex items-center gap-1.5 rounded-[4px] border px-1.5 py-px font-mono text-[12px]',
                                src.state === 'complete' ? 'border-success/25 text-success'
                                : ['failed', 'aborted'].includes(src.state) ? 'border-border text-faint line-through'
                                  : 'border-primary/30 text-primary')"
@@ -466,18 +463,18 @@ const dismiss = useMutation({
                 </template>
                 <span
                   v-else-if="coverageByTrack?.get(tr.id)?.upgrade"
-                  class="inline-flex items-center gap-1.5 text-[11px] text-warning"
+                  class="inline-flex items-center gap-1.5 text-[12px] text-warning"
                   :title="t('coverage.upgradeHint')"
                 >{{ FORMAT_LABELS[coverageByTrack.get(tr.id)!.library_format ?? ''] }} · {{ t('coverage.toUpgrade') }}</span>
                 <span
                   v-else-if="present.has(tr.recording_mbid) || coverageByTrack?.get(tr.id)?.state === 'in_library'"
-                  class="text-[11px] text-success"
+                  class="text-[12px] text-success"
                 >{{ t('coverage.state.in_library') }}</span>
-                <span v-else :class="cn('text-[11px]', coverageByTrack && album.monitored ? 'text-warning' : 'text-faint')">{{ t('coverage.state.missing') }}</span>
+                <span v-else :class="cn('text-[12px]', coverageByTrack && album.monitored ? 'text-warning' : 'text-faint')">{{ t('coverage.state.missing') }}</span>
               </span>
             </div>
           </div>
-          <p v-else class="text-[12.5px] text-faint">
+          <p v-else class="text-[13px] text-faint">
             {{ t('album.noTracklist') }}
           </p>
         </TabsContent>
@@ -494,7 +491,7 @@ const dismiss = useMutation({
               <EmptyTitle class="text-[14px]">
                 {{ t('album.noCandidates') }}
               </EmptyTitle>
-              <EmptyDescription class="text-[12.5px]">
+              <EmptyDescription class="text-[13px]">
                 {{ t('album.noCandidatesHint') }}
               </EmptyDescription>
             </EmptyHeader>
@@ -541,10 +538,10 @@ const dismiss = useMutation({
             >
               <FormatTag :format="f.format" />
               <span class="min-w-0 flex-1 truncate font-mono text-[12px]" :title="f.path">{{ f.path }}</span>
-              <span class="font-mono text-[11.5px] text-faint tnum">{{ bytes(f.size) }}</span>
+              <span class="font-mono text-[12px] text-faint tnum">{{ bytes(f.size) }}</span>
             </div>
           </div>
-          <p v-else class="rounded-xl bg-card/50 px-4 py-6 text-[12.5px] text-faint">
+          <p v-else class="rounded-xl bg-card/50 px-4 py-6 text-[13px] text-faint">
             {{ t('album.noFiles') }}
           </p>
         </TabsContent>
@@ -562,14 +559,14 @@ const dismiss = useMutation({
               @resume="(tid) => tx.run([tid], 'resume')"
             />
           </div>
-          <p v-else class="rounded-xl bg-card/50 px-4 py-6 text-[12.5px] text-faint">
+          <p v-else class="rounded-xl bg-card/50 px-4 py-6 text-[13px] text-faint">
             {{ t('album.noTransfers') }}
           </p>
         </TabsContent>
 
         <TabsContent value="history">
           <EventFeed v-if="album.events.length" :events="album.events" :links="false" />
-          <p v-else class="text-[12.5px] text-faint">
+          <p v-else class="text-[13px] text-faint">
             {{ t('common.nothingYet') }}
           </p>
         </TabsContent>

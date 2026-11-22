@@ -13,18 +13,18 @@ defineProps<{ mbid: string | null | undefined, tinted?: boolean }>()
   <div
     v-if="mbid"
     aria-hidden="true"
-    class="pointer-events-none absolute -top-7 left-1/2 -z-10 h-[680px] w-screen -translate-x-1/2 overflow-hidden"
+    class="pointer-events-none absolute -top-7 left-1/2 -z-10 h-[520px] w-screen -translate-x-1/2 overflow-hidden"
   >
     <img
       :src="coverUrl(mbid, 250)"
       alt=""
-      class="absolute inset-0 size-full scale-125 object-cover opacity-45 blur-[70px] saturate-150 dark:opacity-75"
+      class="absolute inset-0 size-full scale-125 object-cover opacity-25 blur-[64px] dark:opacity-40"
     >
     <!-- Dominant colour wash, strongest at the top -->
     <div
       v-if="tinted"
       class="absolute inset-0"
-      style="background: linear-gradient(180deg, hsl(var(--cover-h) var(--cover-s) 32% / 0.55) 0%, hsl(var(--cover-h) var(--cover-s) 22% / 0.25) 45%, transparent 75%)"
+      style="background: linear-gradient(180deg, hsl(var(--cover-h) var(--cover-s) 32% / 0.3) 0%, hsl(var(--cover-h) var(--cover-s) 22% / 0.12) 45%, transparent 75%)"
     />
     <!-- Readability: darker behind the text on the left, then fade into the page -->
     <div class="absolute inset-0 bg-gradient-to-r from-background/70 via-background/25 to-background/45" />
