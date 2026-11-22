@@ -760,7 +760,8 @@ class HunterService:
                 await self._give_back(cid, M("reason.race_lost", peer=names.get(winner or -1, "?")) if winner
                                       else M("reason.race_kept", peer=names.get(candidate_id, "?")))
         if winner is not None and winner != candidate_id:
-            await self._drop_source(candidate_id, M("reason.relieved", peer=names[winner]))
+            relieved = M("reason.relieved", peer=names[winner])
+            await self._drop_source(candidate_id, relieved, file_reason=relieved)
             self._relief_tried.pop(candidate_id, None)
             await self.start_download(winner, by="auto")
 
@@ -1203,7 +1204,7 @@ class HunterService:
         asyncio.create_task(self.hunt(rg_id, "manual", replace=True))
         return len(active)
 
-    async def _drop_source(self, candidate_id: int, reason: Msg) -> dict | None:
+    async def _drop_source(self, candidate_id: int, reason: Msg, file_reason: Msg | None = None) -> dict | None:
         """Cancels the unfinished files of a source (what arrived is kept) and marks it failed.
         The album status is left to the caller."""
         async with self.core.db.session() as s:
@@ -1219,7 +1220,8 @@ class HunterService:
             for t in pending:
                 # Paused or never answered: the engine may not even track them any more
                 t.state = TransferState.ABORTED
-                t.error = M("reason.cancelled_by_you", n=1).text
+                # By you, unless the caller says otherwise (a source relieved by soulsick)
+                t.error = (file_reason or M("reason.cancelled_by_you", n=1)).text
                 t.completed_at = datetime.now(UTC)
             c.status = CandidateStatus.FAILED
             set_reason(c, "reject_reason", reason)
