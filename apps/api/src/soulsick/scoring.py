@@ -3,7 +3,7 @@
 Score sur 100 :
 - 50 pts : correspondance avec la tracklist MusicBrainz (titres, nombre de pistes, durées)
 - 30 pts : rang du format dans le profil qualité
-- 20 pts : disponibilité du pair (slot libre, file d'attente, vitesse)
+- 20 pts : disponibilité du pair (ce qu'il a fait les fois d'avant, slot libre, file d'attente, vitesse)
 """
 
 import re
@@ -126,13 +126,23 @@ def group_results(results: list[PeerResult]) -> list[ScoredCandidate]:
     return [c for c in groups.values() if c.audio_files]
 
 
-def peer_points(c: ScoredCandidate) -> tuple[float, dict]:
-    slot = 10.0 if c.has_free_slots else 0.0
-    queue = 5.0 / (1 + c.queue_size / 5)
-    speed = 5.0 * min(1.0, c.avg_speed / 2_000_000)
-    return slot + queue + speed, {
-        "points": round(slot + queue + speed, 1),
+# What a peer did the last time an album was asked from it (see PeerService.track_records)
+DELIVERED = "delivered"
+SILENT = "silent"
+
+
+def peer_points(c: ScoredCandidate, record: str | None = None) -> tuple[float, dict]:
+    """Nearly every peer announces a free slot and an empty queue: what it did the last time
+    tells far more. Unknown peers sit in the middle."""
+    history = {DELIVERED: 10.0, SILENT: 0.0}.get(record or "", 5.0)
+    slot = 5.0 if c.has_free_slots else 0.0
+    queue = 2.5 / (1 + c.queue_size / 5)
+    speed = 2.5 * min(1.0, c.avg_speed / 2_000_000)
+    total = history + slot + queue + speed
+    return total, {
+        "points": round(total, 1),
         "max": 20,
+        "record": record,
         "free_slot": c.has_free_slots,
         "queue_size": c.queue_size,
         "avg_speed": c.avg_speed,
@@ -146,6 +156,7 @@ def score_candidate(
     max_missing_tracks: int = 0,
     min_match: float = 0.6,
     artist_hint: str = "",
+    record: str | None = None,
 ) -> ScoredCandidate:
     # Format : c'est le fichier le moins bon qui fixe la qualité de l'album
     formats = [detect_format(f.info) for f in c.audio_files]
@@ -191,7 +202,7 @@ def score_candidate(
             "missing": [rel.tracks[i].title for i in m.unmatched_tracks if i not in rel.owned],
         }
 
-    p_points, p_detail = peer_points(c)
+    p_points, p_detail = peer_points(c, record)
     c.detail["peer"] = p_detail
     c.score = round(fmt_points + match_points + p_points, 1)
 
@@ -241,10 +252,15 @@ def rank_candidates(
     max_missing_tracks: int = 0,
     min_match: float = 0.6,
     artist_hint: str = "",
+    records: dict[str, str] | None = None,
 ) -> list[ScoredCandidate]:
     releases = unique_tracklists(releases)
+    records = records or {}
     cands = [
-        score_candidate(c, compatible(releases, len(c.audio_files)), profile_formats, max_missing_tracks, min_match, artist_hint)
+        score_candidate(
+            c, compatible(releases, len(c.audio_files)), profile_formats, max_missing_tracks, min_match, artist_hint,
+            records.get(c.username),
+        )
         for c in group_results(results)
     ]
     cands.sort(key=lambda c: (c.rejected, -c.score))

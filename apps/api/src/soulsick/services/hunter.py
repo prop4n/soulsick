@@ -356,10 +356,11 @@ class HunterService:
             return []
         self.current = {"release_group_id": rg.id, "label": label, "step": "scoring"}
         # Heavy work (hundreds of folders): off the event loop so the app stays responsive
+        records = await self.core.peers.track_records({r.username for r in results})
         t0 = time.perf_counter()
         scored = await asyncio.to_thread(
             rank_candidates,
-            results, options, profile.formats, profile.max_missing_tracks, cfg.min_match, artist_name,
+            results, options, profile.formats, profile.max_missing_tracks, cfg.min_match, artist_name, records,
         )
         log.info(
             "%s: %d folders scored in %.1f s (%d MusicBrainz editions, %d distinct tracklists)",

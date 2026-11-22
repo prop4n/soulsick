@@ -48,6 +48,9 @@ const parts = computed(() => [
             </template>
           </template>
           <template v-else-if="p.key === 'peer' && detail.peer">
+            <template v-if="detail.peer.record">
+              {{ detail.peer.record === 'delivered' ? t('peer.recordDelivered') : t('peer.recordSilent') }},
+            </template>
             {{ detail.peer.free_slot ? t('peer.freeSlot') : t('peer.noFreeSlot') }}, {{ t('peer.queue', { n: detail.peer.queue_size }) }},
             {{ t('score.avgSpeed', { speed: speed(detail.peer.avg_speed) }) }}
           </template>

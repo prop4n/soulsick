@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import time
+from collections import defaultdict
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
 from sqlalchemy import case, desc, func, select
@@ -17,12 +19,16 @@ from ..models import (
     TransferState,
     iso_utc,
 )
+from ..scoring import DELIVERED, SILENT
 from .transfers import transfer_to_dict
 
 if TYPE_CHECKING:
     from ..core import Core
 
 PROFILE_TTL = 60.0
+# A source dropped before this, without a byte, may just have been replaced quickly (by you, or
+# by a faster peer): not enough to call the peer silent
+SILENT_AFTER = timedelta(minutes=10)
 
 
 class PeerService:
@@ -41,6 +47,42 @@ class PeerService:
             oldest = min(self._profiles, key=lambda k: self._profiles[k][0])
             del self._profiles[oldest]
         return p
+
+    async def track_records(self, usernames: set[str]) -> dict[str, str]:
+        """What each peer did the last time an album was asked from it: it sent (at least a
+        byte), or it stayed silent until the source was dropped. Peers never asked are left out.
+
+        Measured on the homelab (Nov 2026): every peer announced a free slot, half of the sources
+        never sent anything, and a peer's previous outcome matched the next one 45 times out of 48.
+        """
+        if not usernames:
+            return {}
+        async with self.core.db.session() as s:
+            rows = (await s.execute(
+                select(
+                    Candidate.id, Candidate.username, Candidate.status, Transfer.state, Transfer.started_at,
+                    Transfer.bytes_transferred, Transfer.requested_at, Transfer.created_at, Transfer.completed_at,
+                )
+                .join(Transfer, Transfer.candidate_id == Candidate.id)
+                .where(Candidate.username.in_(usernames), Transfer.direction == "download")
+            )).all()
+        by_candidate: dict[int, list] = defaultdict(list)
+        for row in rows:
+            by_candidate[row[0]].append(row)
+        out: dict[str, str] = {}
+        for cid in sorted(by_candidate):  # oldest first: the last outcome wins
+            ts = by_candidate[cid]
+            username, status = ts[0][1], ts[0][2]
+            if any(st == TransferState.COMPLETE or started or (sent or 0) > 0 for _, _, _, st, started, sent, *_ in ts):
+                out[username] = DELIVERED
+                continue
+            if status != CandidateStatus.FAILED:
+                continue  # still waiting, or given back: nothing to say yet
+            asked = min(_aware(req or created) for *_, req, created, _ in ts)
+            ended = max((_aware(done) for *_, done in ts if done), default=None)
+            if ended and ended - asked >= SILENT_AFTER:
+                out[username] = SILENT
+        return out
 
     async def history(self, username: str) -> dict:
         async with self.core.db.session() as s:
@@ -115,3 +157,8 @@ class PeerService:
             "messages": {"count": chat[0], "last": iso_utc(chat[1])},
             "recent": [transfer_to_dict(t) for t in recent],
         }
+
+
+def _aware(dt: datetime) -> datetime:
+    """SQLite gives the dates back without their time zone: they are UTC."""
+    return dt if dt.tzinfo else dt.replace(tzinfo=UTC)

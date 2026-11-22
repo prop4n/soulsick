@@ -143,6 +143,8 @@ const fr: Messages = {
     freeSlot: 'slot libre',
     noFreeSlot: 'pas de slot libre',
     queue: 'file {n}',
+    recordDelivered: 'a déjà envoyé',
+    recordSilent: 'muet la dernière fois',
   },
 
   home: {
