@@ -13,7 +13,7 @@ from sqlalchemy import delete, select
 from ..audiotags import read_meta
 from ..lyrics import LYRICS_EXTENSIONS, best_sidecar
 from ..messages import M, set_reason
-from ..models import AlbumStatus, Artist, LibraryFile, QualityProfile, Release, ReleaseGroup, of_artist
+from ..models import AlbumStatus, Artist, LibraryFile, Release, ReleaseGroup, of_artist
 from ..quality import is_audio, is_better_or_equal, worst_format
 
 if TYPE_CHECKING:
@@ -143,7 +143,7 @@ class LibraryService:
             artist = await s.get(Artist, artist_id)
             if not artist:
                 return
-            profile = await s.get(QualityProfile, artist.quality_profile_id) if artist.quality_profile_id else None
+            profile = await self.core.catalog.quality_profile(s)
             rgs = list((await s.execute(select(ReleaseGroup).where(of_artist(artist_id)))).scalars())
             if not rgs:
                 return

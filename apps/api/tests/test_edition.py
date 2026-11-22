@@ -6,7 +6,7 @@ La retenir ne changeait rien : le total venait des tags des fichiers (11), pas d
 
 from fakes import TRACKS, peer_with_album
 from sqlalchemy import select
-from test_flow import ctx, wait_for  # noqa: F401
+from test_flow import ctx, hunt_only, wait_for  # noqa: F401
 
 from soulsick.models import Release, Track
 
@@ -14,11 +14,11 @@ from soulsick.models import Release, Track
 async def test_retenir_une_edition_plus_longue_rend_l_album_partiel(ctx):  # noqa: F811
     client, core, engine, env = ctx
     await client.post("/api/auth/setup", json={"username": "admin", "password": "motdepasse"})
-    r = await client.post("/api/artists", json={"mbid": "x", "mode": "validation", "primary_types": ["album"], "monitor": "all"})
+    r = await client.post("/api/artists", json={"mbid": "x", "primary_types": ["album"], "monitor": "all"})
     rid = next(rg["id"] for rg in (await client.get(f"/api/artists/{r.json()['id']}")).json()["release_groups"]
                if rg["title"] == "Nevermind")
     engine.results = [peer_with_album()]
-    await core.hunter.hunt(rid)
+    await hunt_only(core, rid)
     cid = (await client.get(f"/api/albums/{rid}")).json()["candidates"][0]["id"]
     await client.post(f"/api/candidates/{cid}/approve")
 

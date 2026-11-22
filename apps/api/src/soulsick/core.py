@@ -7,6 +7,7 @@ from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import select, text, update
 
+from . import migrations
 from .auth import Auth
 from .config import Env
 from .db import Database
@@ -93,6 +94,7 @@ class Core:
             await s.commit()
         await self.catalog.ensure_default_profiles()
         await convert_legacy_reasons(self.db)
+        await migrations.run(self)
         await self._drop_retired_source()
         await self._recover()
         await self.transfers.load_cancelled()

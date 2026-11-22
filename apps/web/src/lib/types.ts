@@ -11,8 +11,6 @@ export type AlbumStatus =
   | 'imported'
   | 'failed'
 
-export type ArtistMode = 'auto' | 'validation'
-
 export interface EngineStatus {
   configured: boolean
   connected: boolean
@@ -80,8 +78,6 @@ export interface Artist {
   country: string | null
   type: string | null
   monitored: boolean
-  mode: ArtistMode
-  quality_profile_id: number | null
   primary_types: string[]
   secondary_types: string[]
   added_at: string
@@ -109,7 +105,7 @@ export interface ReleaseGroup {
   imported_path: string | null
   last_searched_at: string | null
   updated_at: string
-  artist?: { id: number, name: string, mbid: string, mode: ArtistMode }
+  artist?: { id: number, name: string, mbid: string }
 }
 
 export interface ArtistDetail extends Artist {
@@ -158,6 +154,8 @@ export interface RemoteFile {
 }
 
 export interface ScoreDetail {
+  /** Only when the folder is heavier than the preferred album size */
+  size?: { points: number, mb: number, preferred: number }
   format?: { points: number, max: number, format: string | null, label: string, rank: number | null, mixed: boolean }
   match?: {
     points: number
@@ -392,8 +390,10 @@ export interface AppSettings {
     interval_minutes: number
     max_searches_per_run: number
     search_wait_seconds: number
-    proposals: number
     min_match: number
+    /** The profile every album is hunted with (null = the first one) */
+    profile_id: number | null
+    preferred_album_mb: number
     download_covers: boolean
     stuck_no_progress_minutes: number
     stuck_queue_minutes: number

@@ -1,7 +1,7 @@
 """Panachage : compléter un album avec des pistes venant d'un autre pair."""
 
 from fakes import TRACKS, peer_with_album
-from test_flow import ctx, wait_for  # noqa: F401
+from test_flow import ctx, hunt_only, wait_for  # noqa: F401
 
 from soulsick.audiotags import read_meta
 from soulsick.models import Candidate, CandidateStatus, LibraryFile
@@ -15,7 +15,7 @@ async def _album_with_one_missing(client, core, engine):
     otherpeer (et flaky) ont été écartés à la notation : le relais automatique ne va pas chez
     eux, compléter depuis eux reste ton choix."""
     await client.post("/api/auth/setup", json={"username": "admin", "password": "motdepasse"})
-    r = await client.post("/api/artists", json={"mbid": "x", "mode": "validation", "primary_types": ["album"], "monitor": "all"})
+    r = await client.post("/api/artists", json={"mbid": "x", "primary_types": ["album"], "monitor": "all"})
     aid = r.json()["id"]
     rid = next(rg["id"] for rg in (await client.get(f"/api/artists/{aid}")).json()["release_groups"]
                if rg["title"] == "Nevermind")
@@ -24,7 +24,7 @@ async def _album_with_one_missing(client, core, engine):
         engine.results.append(peer_with_album("flaky"))
     engine.script[f"am3:{FILE2}"] = ["fail", "fail", "fail"]
     core.hunter.retry_delays = [0.02, 0.02]
-    await core.hunter.hunt(rid)
+    await hunt_only(core, rid)
     cands = (await client.get(f"/api/albums/{rid}")).json()["candidates"]
     am3 = next(c for c in cands if c["username"] == "am3")
     other = next(c for c in cands if c["username"] == "otherpeer")

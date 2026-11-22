@@ -5,7 +5,7 @@ from test_flow import ctx  # noqa: F401
 
 async def _artist(client, types=("album", "single")):
     await client.post("/api/auth/setup", json={"username": "admin", "password": "motdepasse"})
-    r = await client.post("/api/artists", json={"mbid": "x", "mode": "validation", "primary_types": list(types), "monitor": "all"})
+    r = await client.post("/api/artists", json={"mbid": "x", "primary_types": list(types), "monitor": "all"})
     return r.json()["id"]
 
 
@@ -52,7 +52,7 @@ async def test_retirer_un_type_arrete_de_suivre_l_existant(ctx):  # noqa: F811
 async def test_par_defaut_rien_n_est_suivi(ctx):  # noqa: F811
     client, *_ = ctx
     await client.post("/api/auth/setup", json={"username": "admin", "password": "motdepasse"})
-    r = await client.post("/api/artists", json={"mbid": "x", "mode": "auto", "primary_types": ["album", "single"]})
+    r = await client.post("/api/artists", json={"mbid": "x", "primary_types": ["album", "single"]})
     rgs = await _rgs(client, r.json()["id"])
     assert not any(rg["monitored"] for rg in rgs.values())
     assert all(rg["status"] == "ignored" for rg in rgs.values())

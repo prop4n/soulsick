@@ -19,10 +19,10 @@ async def _status(client, rid):
     return (await client.get(f"/api/albums/{rid}")).json()["status"]
 
 
-async def _downloading(client, core, engine, mode="validation"):
-    """goodpeer et otherpeer ont l'album ; goodpeer est approuvé (ou pris tout seul en auto)."""
+async def _downloading(client, core, engine):
+    """goodpeer et otherpeer ont l'album ; goodpeer, le premier à égalité, est pris tout seul."""
     await client.post("/api/auth/setup", json={"username": "admin", "password": "motdepasse"})
-    artist = {"mbid": "x", "mode": mode, "primary_types": ["album"], "monitor": "all"}
+    artist = {"mbid": "x", "primary_types": ["album"], "monitor": "all"}
     aid = (await client.post("/api/artists", json=artist)).json()["id"]
     albums = (await client.get(f"/api/artists/{aid}")).json()["release_groups"]
     rid = next(rg["id"] for rg in albums if rg["title"] == "Nevermind")
@@ -34,10 +34,6 @@ async def _downloading(client, core, engine, mode="validation"):
     settings.hunter.race_peers = 1
     await core.settings.save(settings)
     await core.hunter.hunt(rid)
-    if mode == "validation":
-        cands = (await client.get(f"/api/albums/{rid}")).json()["candidates"]
-        good = next(c for c in cands if c["username"] == "goodpeer")
-        await client.post(f"/api/candidates/{good['id']}/approve")
     return rid
 
 
@@ -65,7 +61,7 @@ async def test_source_qui_refuse_tout_pour_de_bon_la_suivante_part_aussitot(ctx)
     client, core, engine, env = ctx
     for i, (title, _) in enumerate(TRACKS):
         engine.script[f"goodpeer:{i + 1:02d} - {title}.flac"] = ["fail:File not shared."]
-    rid = await _downloading(client, core, engine, mode="auto")
+    rid = await _downloading(client, core, engine)
 
     async def imported():
         return await _status(client, rid) == "imported"

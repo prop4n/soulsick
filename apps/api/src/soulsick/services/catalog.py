@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from ..messages import M, set_reason
@@ -21,10 +22,12 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
+# CD quality first: a 24-bit album often weighs over 1 GB for the same music, it only comes
+# when nothing else is there
+CD_QUALITY = ("CD quality", ["flac", "alac", "wav", "flac-24"], "flac")
 DEFAULT_PROFILES = [
-    ("Lossless", ["flac-24", "flac", "alac", "wav"], "flac"),
-    ("Lossless then MP3", ["flac-24", "flac", "alac", "mp3-320", "mp3-v0"], "flac"),
-    ("High quality (anything)", ["flac-24", "flac", "alac", "wav", "mp3-320", "mp3-v0", "aac-256", "opus"], "mp3-320"),
+    CD_QUALITY,
+    ("Hi-res", ["flac-24", "flac", "alac", "wav"], "flac"),
     ("MP3 320", ["mp3-320", "mp3-v0"], "mp3-320"),
 ]
 
@@ -74,27 +77,32 @@ class CatalogService:
                 s.add(QualityProfile(name=name, formats=formats, upgrade_until=until, max_missing_tracks=0))
             await s.commit()
 
+    async def quality_profile(self, s: AsyncSession) -> QualityProfile | None:
+        """The profile every album is hunted, checked and imported with: the one chosen in the
+        settings, otherwise the first one."""
+        pid = (await self.core.settings.get()).hunter.profile_id
+        profile = await s.get(QualityProfile, pid) if pid else None
+        first = select(QualityProfile).order_by(QualityProfile.id).limit(1)
+        return profile or (await s.execute(first)).scalars().first()
+
     async def add_artist(
         self,
         mbid: str,
         *,
-        mode: str,
-        quality_profile_id: int | None,
         primary_types: list[str],
         secondary_types: list[str],
         monitor: str = "none",  # none | future | all — par défaut rien : tu choisis ensuite
     ) -> Artist:
         a, created = await self._create_artist(
-            mbid, mode=mode, quality_profile_id=quality_profile_id,
-            primary_types=primary_types, secondary_types=secondary_types,
+            mbid, primary_types=primary_types, secondary_types=secondary_types,
         )
         if created:
             await self.sync_artist(a.id, initial_monitor=monitor)
         return a
 
     async def _create_artist(
-        self, mbid: str, *, mode: str, quality_profile_id: int | None,
-        primary_types: list[str], secondary_types: list[str], monitored: bool = True, announce: bool = True,
+        self, mbid: str, *, primary_types: list[str], secondary_types: list[str],
+        monitored: bool = True, announce: bool = True,
     ) -> tuple[Artist, bool]:
         """Fiche de l'artiste seule (une requête MusicBrainz), sans sa discographie."""
         info = await self.core.mb.get_artist(mbid)
@@ -109,8 +117,6 @@ class CatalogService:
                 disambiguation=info["disambiguation"],
                 country=info["country"],
                 type=info["type"],
-                mode=mode,
-                quality_profile_id=quality_profile_id,
                 primary_types=primary_types,
                 secondary_types=secondary_types,
                 monitored=monitored,
@@ -123,7 +129,7 @@ class CatalogService:
             return a, True
         await self.core.journal.emit(
             "artist.added",
-            M("artist.added", name=a.name, mode=M("word.automatic" if mode == "auto" else "word.ask_me")),
+            M("artist.added", name=a.name),
             artist_id=a.id,
             data={"mbid": mbid, "primary_types": primary_types, "secondary_types": secondary_types},
         )
@@ -172,8 +178,8 @@ class CatalogService:
                         artist = (await s.execute(select(Artist).where(Artist.mbid == g["artist_mbid"]))).scalar_one_or_none()
                     if artist is None:
                         artist, _ = await self._create_artist(
-                            g["artist_mbid"], mode="validation", quality_profile_id=None,
-                            primary_types=["album", "ep"], secondary_types=[], monitored=False, announce=False,
+                            g["artist_mbid"], primary_types=["album", "ep"], secondary_types=[],
+                            monitored=False, announce=False,
                         )
                         artists_added += 1
                 except Exception as e:  # MusicBrainz unavailable: this album is tried again next scan

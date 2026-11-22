@@ -4,7 +4,7 @@ from datetime import UTC, datetime, timedelta
 
 from fakes import TRACKS, peer_with_album
 from sqlalchemy import select
-from test_flow import ctx, wait_for  # noqa: F401
+from test_flow import ctx, hunt_only, wait_for  # noqa: F401
 
 from soulsick.models import Transfer
 
@@ -14,12 +14,12 @@ FILE2 = f"02 - {TRACKS[1][0]}.flac"
 async def test_pause_puis_reprise(ctx):  # noqa: F811
     client, core, engine, env = ctx
     await client.post("/api/auth/setup", json={"username": "admin", "password": "motdepasse"})
-    r = await client.post("/api/artists", json={"mbid": "x", "mode": "validation", "primary_types": ["album"], "monitor": "all"})
+    r = await client.post("/api/artists", json={"mbid": "x", "primary_types": ["album"], "monitor": "all"})
     rid = next(rg["id"] for rg in (await client.get(f"/api/artists/{r.json()['id']}")).json()["release_groups"]
                if rg["title"] == "Nevermind")
     engine.results = [peer_with_album()]
     engine.script[FILE2] = ["hold"]  # le 2e fichier reste en file chez le pair
-    await core.hunter.hunt(rid)
+    await hunt_only(core, rid)
     cid = (await client.get(f"/api/albums/{rid}")).json()["candidates"][0]["id"]
     await client.post(f"/api/candidates/{cid}/approve")
 
@@ -62,13 +62,13 @@ async def test_pause_puis_reprise(ctx):  # noqa: F811
 async def test_abandon_a_source_that_never_delivers(ctx):  # noqa: F811
     client, core, engine, env = ctx
     await client.post("/api/auth/setup", json={"username": "admin", "password": "motdepasse"})
-    r = await client.post("/api/artists", json={"mbid": "x", "mode": "validation", "primary_types": ["album"], "monitor": "all"})
+    r = await client.post("/api/artists", json={"mbid": "x", "primary_types": ["album"], "monitor": "all"})
     rid = next(rg["id"] for rg in (await client.get(f"/api/artists/{r.json()['id']}")).json()["release_groups"]
                if rg["title"] == "Nevermind")
     engine.results = [peer_with_album(), peer_with_album("otherpeer")]
     engine.script[FILE2] = ["hold"]
     engine.script[f"03 - {TRACKS[2][0]}.flac"] = ["hold"]
-    await core.hunter.hunt(rid)
+    await hunt_only(core, rid)
     cid = (await client.get(f"/api/albums/{rid}")).json()["candidates"][0]["id"]
     await client.post(f"/api/candidates/{cid}/approve")
 
@@ -85,21 +85,25 @@ async def test_abandon_a_source_that_never_delivers(ctx):  # noqa: F811
     assert r.json()["cancelled"] == 2
 
     album = (await client.get(f"/api/albums/{rid}")).json()
-    assert album["status"] == "pending_approval", "another candidate is there: your choice"
-    assert album["status_reason_t"]["key"] == "reason.abandoned_pick"
+    # Cancelling is not switching: nothing else starts, the album is wanted again
+    assert album["status"] == "wanted"
+    assert album["status_reason_t"]["key"] == "reason.abandoned"
+    assert not any(c["status"] == "chosen" for c in album["candidates"])
     cand = next(c for c in album["candidates"] if c["id"] == cid)
     assert cand["status"] == "failed" and cand["reject_reason_t"]["key"] == "reason.abandoned"
     states = sorted(t["state"] for t in album["transfers"])
     assert states == ["aborted", "aborted", "complete"], "what arrived is kept"
     # Nothing restarts on its own: no stall check, no fallback
     await core.hunter.check_stalled()
-    assert (await client.get(f"/api/albums/{rid}")).json()["status"] == "pending_approval"
+    album = (await client.get(f"/api/albums/{rid}")).json()
+    assert album["status"] == "wanted"
+    assert not any(c["status"] == "chosen" for c in album["candidates"])
 
 
 async def test_batch_actions_on_transfers(ctx):  # noqa: F811
     client, core, engine, env = ctx
     await client.post("/api/auth/setup", json={"username": "admin", "password": "motdepasse"})
-    r = await client.post("/api/artists", json={"mbid": "x", "mode": "auto", "primary_types": ["album"], "monitor": "all"})
+    r = await client.post("/api/artists", json={"mbid": "x", "primary_types": ["album"], "monitor": "all"})
     rid = next(rg["id"] for rg in (await client.get(f"/api/artists/{r.json()['id']}")).json()["release_groups"]
                if rg["title"] == "Nevermind")
     engine.results = [peer_with_album(), peer_with_album("otherpeer")]
@@ -125,14 +129,14 @@ async def test_batch_actions_on_transfers(ctx):  # noqa: F811
     r = await client.post("/api/transfers/batch", json={"ids": ids[1:], "action": "cancel"})
     assert r.json()["done"] == 2
     album = (await client.get(f"/api/albums/{rid}")).json()
-    assert album["status"] == "pending_approval"
+    assert album["status"] == "wanted"
     assert {c["username"] for c in album["candidates"] if c["status"] == "chosen"} == set()
 
 
 async def test_a_source_waiting_in_the_peer_queue_is_not_dropped(ctx):  # noqa: F811
     client, core, engine, env = ctx
     await client.post("/api/auth/setup", json={"username": "admin", "password": "motdepasse"})
-    r = await client.post("/api/artists", json={"mbid": "x", "mode": "auto", "primary_types": ["album"], "monitor": "all"})
+    r = await client.post("/api/artists", json={"mbid": "x", "primary_types": ["album"], "monitor": "all"})
     rid = next(rg["id"] for rg in (await client.get(f"/api/artists/{r.json()['id']}")).json()["release_groups"]
                if rg["title"] == "Nevermind")
     engine.results = [peer_with_album()]
@@ -156,12 +160,12 @@ async def test_a_cancelled_transfer_stays_cancelled(ctx):  # noqa: F811
 
     client, core, engine, env = ctx
     await client.post("/api/auth/setup", json={"username": "admin", "password": "motdepasse"})
-    r = await client.post("/api/artists", json={"mbid": "x", "mode": "validation", "primary_types": ["album"], "monitor": "all"})
+    r = await client.post("/api/artists", json={"mbid": "x", "primary_types": ["album"], "monitor": "all"})
     rid = next(rg["id"] for rg in (await client.get(f"/api/artists/{r.json()['id']}")).json()["release_groups"]
                if rg["title"] == "Nevermind")
     engine.results = [peer_with_album()]
     engine.script[FILE2] = ["hold"]
-    await core.hunter.hunt(rid)
+    await hunt_only(core, rid)
     cid = (await client.get(f"/api/albums/{rid}")).json()["candidates"][0]["id"]
     await client.post(f"/api/candidates/{cid}/approve")
 
@@ -233,7 +237,7 @@ async def test_a_received_file_is_never_downloaded_again(ctx):  # noqa: F811
 
     client, core, engine, env = ctx
     await client.post("/api/auth/setup", json={"username": "admin", "password": "motdepasse"})
-    r = await client.post("/api/artists", json={"mbid": "x", "mode": "auto", "primary_types": ["album"], "monitor": "all"})
+    r = await client.post("/api/artists", json={"mbid": "x", "primary_types": ["album"], "monitor": "all"})
     rid = next(rg["id"] for rg in (await client.get(f"/api/artists/{r.json()['id']}")).json()["release_groups"]
                if rg["title"] == "Nevermind")
     engine.results = [peer_with_album()]
@@ -313,12 +317,12 @@ async def test_a_received_file_stored_elsewhere_is_brought_back_for_import(ctx):
 
     client, core, engine, env = ctx
     await client.post("/api/auth/setup", json={"username": "admin", "password": "motdepasse"})
-    r = await client.post("/api/artists", json={"mbid": "x", "mode": "validation", "primary_types": ["album"], "monitor": "all"})
+    r = await client.post("/api/artists", json={"mbid": "x", "primary_types": ["album"], "monitor": "all"})
     rid = next(rg["id"] for rg in (await client.get(f"/api/artists/{r.json()['id']}")).json()["release_groups"]
                if rg["title"] == "Nevermind")
     engine.results = [peer_with_album()]
     engine.script[FILE2] = ["hold"]
-    await core.hunter.hunt(rid)
+    await hunt_only(core, rid)
     cid = (await client.get(f"/api/albums/{rid}")).json()["candidates"][0]["id"]
     await client.post(f"/api/candidates/{cid}/approve")
 

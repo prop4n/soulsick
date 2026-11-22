@@ -6,7 +6,7 @@ import time
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel, Field
-from sqlalchemy import desc, func, select
+from sqlalchemy import desc, func, select, update
 
 from ..core import Core
 from ..journal import event_to_dict
@@ -227,12 +227,17 @@ async def update_profile(pid: int, body: ProfileIn, core: Core = Depends(get_cor
 
 @router.delete("/profiles/{pid}")
 async def delete_profile(pid: int, core: Core = Depends(get_core)) -> dict:
+    """Every album is hunted with the profile chosen in the settings: that one stays."""
     async with core.db.session() as s:
-        used = (await s.execute(select(func.count()).where(Artist.quality_profile_id == pid))).scalar_one()
-        if used:
-            raise http_error(409, "error.profile_in_use", n=used)
+        chosen = await core.catalog.quality_profile(s)
+        if chosen and chosen.id == pid:
+            raise http_error(409, "error.profile_chosen")
         p = await s.get(QualityProfile, pid)
         if p:
+            # Artists from before the single profile may still point at it
+            await s.execute(
+                update(Artist).where(Artist.quality_profile_id == pid).values(quality_profile_id=None)
+            )
             await s.delete(p)
             await s.commit()
     return {"ok": True}

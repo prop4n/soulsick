@@ -20,7 +20,7 @@ async def _auto_album(client, core, engine, peers, race_seconds=180):
     settings.hunter.race_seconds = race_seconds
     await core.settings.save(settings)
     core.hunter.race_poll = 0.02
-    r = await client.post("/api/artists", json={"mbid": "x", "mode": "auto", "primary_types": ["album"], "monitor": "none"})
+    r = await client.post("/api/artists", json={"mbid": "x", "primary_types": ["album"], "monitor": "none"})
     aid = r.json()["id"]
     rid = next(rg["id"] for rg in (await client.get(f"/api/artists/{aid}")).json()["release_groups"]
                if rg["title"] == "Nevermind")

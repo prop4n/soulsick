@@ -14,6 +14,7 @@ import ThemeGallery from '@/components/ThemeGallery.vue'
 import { Button } from '@/components/ui/button'
 import { Field, FieldDescription, FieldGroup, FieldLabel, FieldSeparator, FieldSet, FieldLegend } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
+import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Spinner } from '@/components/ui/spinner'
 import { Switch } from '@/components/ui/switch'
@@ -22,7 +23,9 @@ import { useFormats, useProfiles, useSettings, useStatus } from '@/composables/q
 import { api } from '@/lib/api'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { getLocalePref, LOCALES, type LocalePref, setLocalePref } from '@/i18n'
+import { FORMAT_LABELS } from '@/lib/status'
 import { getTheme, setTheme, type ThemePref } from '@/lib/theme'
+import { cn } from '@/lib/utils'
 
 const { t } = useI18n()
 const qc = useQueryClient()
@@ -85,6 +88,23 @@ const namingPreview = computed(() => {
     .join('/')}.flac`
   return [render(1), render(2)]
 })
+
+// Quality: the profile every album is hunted with (none chosen yet = the first one)
+const chosenProfile = computed(() => String(form.value?.hunter.profile_id ?? profiles.value?.[0]?.id ?? ''))
+/** What an album of about 45 minutes weighs in the profile's preferred format */
+const TYPICAL_MB: Record<string, number> = {
+  'flac-24': 1000, 'flac': 300, 'alac': 300, 'wav': 480, 'mp3-320': 110, 'mp3-v0': 85, 'aac-256': 85,
+  'mp3-256': 85, 'opus': 50, 'ogg': 50, 'mp3-192': 65, 'aac': 50, 'mp3-low': 40,
+}
+function formatChain(p: QualityProfile) {
+  return p.formats.map(f => FORMAT_LABELS[f] ?? f).join(' > ')
+}
+function albumSize(p: QualityProfile) {
+  const mb = TYPICAL_MB[p.formats[0] ?? '']
+  if (!mb)
+    return ''
+  return mb >= 1000 ? t('settings.hunter.gb', { n: mb / 1000 }) : t('settings.hunter.mb', { n: mb })
+}
 
 // Profiles
 const newProfile = ref<Omit<QualityProfile, 'id'> | null>(null)
@@ -234,6 +254,44 @@ const removeProfile = useMutation({
 
       <TabsContent value="hunter" class="max-w-2xl">
         <FieldGroup>
+          <!-- What every album is downloaded as, and how heavy that is -->
+          <FieldSet>
+            <FieldLegend>{{ t('settings.hunter.quality') }}</FieldLegend>
+            <FieldDescription>{{ t('settings.hunter.qualityHint') }}</FieldDescription>
+            <RadioGroup
+              :model-value="chosenProfile"
+              class="gap-2"
+              @update:model-value="(v) => (form!.hunter.profile_id = Number(v))"
+            >
+              <label
+                v-for="p in profiles ?? []"
+                :key="p.id"
+                :class="cn('flex cursor-pointer items-center gap-3 rounded-lg border px-4 py-3 transition-colors hover:bg-accent/50',
+                           chosenProfile === String(p.id) && 'border-primary/50 bg-accent/40')"
+              >
+                <RadioGroupItem :value="String(p.id)" />
+                <span class="flex min-w-0 flex-1 flex-col gap-1">
+                  <span class="text-[13px] font-medium">{{ p.name }}</span>
+                  <span class="truncate font-mono text-[12px] text-faint">{{ formatChain(p) }}</span>
+                </span>
+                <span v-if="albumSize(p)" class="shrink-0 text-[12px] text-muted-foreground tnum">{{ t('settings.hunter.perAlbum', { size: albumSize(p) }) }}</span>
+              </label>
+            </RadioGroup>
+            <FieldDescription>
+              {{ t('settings.hunter.qualityCustom') }}
+              <button type="button" class="text-primary underline-offset-2 hover:underline" @click="tab = 'profiles'">
+                {{ t('settings.tabs.profiles') }}
+              </button>
+            </FieldDescription>
+          </FieldSet>
+          <Field>
+            <FieldLabel for="hpa">
+              {{ t('settings.hunter.preferredAlbum') }}
+            </FieldLabel>
+            <Input id="hpa" v-model.number="form.hunter.preferred_album_mb" type="number" min="0" step="50" class="font-mono sm:max-w-48" />
+            <FieldDescription>{{ t('settings.hunter.preferredAlbumHint') }}</FieldDescription>
+          </Field>
+          <FieldSeparator />
           <Field orientation="horizontal">
             <Switch id="he" v-model="form.hunter.enabled" />
             <FieldLabel for="he">
@@ -261,21 +319,13 @@ const removeProfile = useMutation({
               <Input id="hw" v-model.number="form.hunter.search_wait_seconds" type="number" min="5" class="font-mono" />
             </Field>
           </div>
-          <div class="grid gap-4 sm:grid-cols-2">
-            <Field>
-              <FieldLabel for="hp">
-                {{ t('settings.hunter.proposals') }}
-              </FieldLabel>
-              <Input id="hp" v-model.number="form.hunter.proposals" type="number" min="1" class="font-mono" />
-            </Field>
-            <Field>
-              <FieldLabel for="hmm">
-                {{ t('settings.hunter.minMatch') }}
-              </FieldLabel>
-              <Input id="hmm" v-model.number="form.hunter.min_match" type="number" min="0" max="1" step="0.05" class="font-mono" />
-              <FieldDescription>{{ t('settings.hunter.minMatchHint') }}</FieldDescription>
-            </Field>
-          </div>
+          <Field class="sm:max-w-80">
+            <FieldLabel for="hmm">
+              {{ t('settings.hunter.minMatch') }}
+            </FieldLabel>
+            <Input id="hmm" v-model.number="form.hunter.min_match" type="number" min="0" max="1" step="0.05" class="font-mono" />
+            <FieldDescription>{{ t('settings.hunter.minMatchHint') }}</FieldDescription>
+          </Field>
           <Field orientation="horizontal">
             <Switch id="hc" v-model="form.hunter.download_covers" />
             <FieldLabel for="hc">

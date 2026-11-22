@@ -25,7 +25,6 @@ from ..models import (
     Candidate,
     CandidateStatus,
     LibraryFile,
-    QualityProfile,
     Release,
     ReleaseGroup,
     Track,
@@ -129,7 +128,7 @@ class ImportService:
             assert rg
             artist = await s.get(Artist, rg.artist_id)
             assert artist
-            profile = await s.get(QualityProfile, artist.quality_profile_id) if artist.quality_profile_id else None
+            profile = await self.core.catalog.quality_profile(s)
         releases = await self.core.catalog.releases_with_tracks(rg.id)
         return c, rg, artist, profile, releases
 

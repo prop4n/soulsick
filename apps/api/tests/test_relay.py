@@ -2,7 +2,7 @@
 
 from fakes import TRACKS, peer_with_album
 from sqlalchemy import select
-from test_flow import ctx, wait_for  # noqa: F401
+from test_flow import ctx, hunt_only, wait_for  # noqa: F401
 
 from soulsick.models import Transfer, TransferState
 
@@ -11,12 +11,12 @@ FILE2 = f"02 - {TRACKS[1][0]}.flac"
 
 async def _album(client, core, engine, peers: list[str]) -> tuple[int, dict]:
     await client.post("/api/auth/setup", json={"username": "admin", "password": "motdepasse"})
-    r = await client.post("/api/artists", json={"mbid": "x", "mode": "validation", "primary_types": ["album"], "monitor": "all"})
+    r = await client.post("/api/artists", json={"mbid": "x", "primary_types": ["album"], "monitor": "all"})
     rid = next(rg["id"] for rg in (await client.get(f"/api/artists/{r.json()['id']}")).json()["release_groups"]
                if rg["title"] == "Nevermind")
     engine.results = [peer_with_album(p) for p in peers]
     core.hunter.retry_delays = [0, 0]
-    await core.hunter.hunt(rid)
+    await hunt_only(core, rid)
     cands = {c["username"]: c for c in (await client.get(f"/api/albums/{rid}")).json()["candidates"]}
     return rid, cands
 

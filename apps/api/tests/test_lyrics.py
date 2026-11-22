@@ -4,7 +4,7 @@ par piste ce qu'il y a (issue #1)."""
 from fakes import TRACKS, peer_with_album, tiny_flac
 from mutagen.flac import FLAC
 from mutagen.id3 import ID3, SYLT, USLT
-from test_flow import ctx, wait_for  # noqa: F401
+from test_flow import ctx, hunt_only, wait_for  # noqa: F401
 
 from soulsick import lyrics
 from soulsick.audiotags import TagSet, read_meta, write_tags
@@ -155,8 +155,7 @@ async def test_la_chasse_telecharge_les_paroles_en_premier(ctx):  # noqa: F811
     settings.hunter.download_covers = False
     await core.settings.save(settings)
     r = await client.post("/api/artists", json={
-        "mbid": "5b11f4ce-a62d-471e-81fc-a69a8278c7da", "mode": "validation",
-        "primary_types": ["album"], "monitor": "all",
+        "mbid": "5b11f4ce-a62d-471e-81fc-a69a8278c7da", "primary_types": ["album"], "monitor": "all",
     })
     rid = next(rg["id"] for rg in (await client.get(f"/api/artists/{r.json()['id']}")).json()["release_groups"]
                if rg["title"] == "Nevermind")
@@ -166,7 +165,7 @@ async def test_la_chasse_telecharge_les_paroles_en_premier(ctx):  # noqa: F811
         RemoteFile("@@music\\Nirvana\\Nevermind\\folder.jpg", size=10),
     ]
     engine.results = [peer]
-    await core.hunter.hunt(rid)
+    await hunt_only(core, rid)
     cand = (await client.get(f"/api/albums/{rid}")).json()["candidates"][0]
     await client.post(f"/api/candidates/{cand['id']}/approve")
 

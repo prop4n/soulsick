@@ -4,7 +4,9 @@ from test_flow import ctx  # noqa: F401
 
 
 async def _add(client, mbid, monitor="none"):
-    r = await client.post("/api/artists", json={"mbid": mbid, "mode": "validation", "primary_types": ["album", "single"], "monitor": monitor})
+    r = await client.post("/api/artists", json={
+        "mbid": mbid, "primary_types": ["album", "single"], "monitor": monitor,
+    })
     assert r.status_code == 200, r.text
     return r.json()["id"]
 

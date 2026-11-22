@@ -120,7 +120,7 @@ async def test_suivre_plusieurs_artistes_avec_les_memes_reglages(ctx):  # noqa: 
     client, core, engine, env = ctx
     await client.post("/api/auth/setup", json={"username": "admin", "password": "motdepasse"})
     r = await client.post("/api/artists/bulk", json={
-        "mbids": [DAMSO, PNL, DAMSO], "mode": "auto", "primary_types": ["album"],
+        "mbids": [DAMSO, PNL, DAMSO], "primary_types": ["album"],
         "secondary_types": ["live"], "monitor": "all",
     })
     assert r.status_code == 200
@@ -132,7 +132,7 @@ async def test_suivre_plusieurs_artistes_avec_les_memes_reglages(ctx):  # noqa: 
 
     await wait_for(both_added)
     for a in (await client.get("/api/artists")).json():
-        assert (a["mode"], a["primary_types"], a["secondary_types"]) == ("auto", ["album"], ["live"])
+        assert (a["primary_types"], a["secondary_types"]) == (["album"], ["live"])
 
 
 async def test_listenbrainz_injoignable_ne_casse_rien(ctx):  # noqa: F811
@@ -197,8 +197,7 @@ async def test_un_artiste_ajoute_est_demande_tout_de_suite(ctx):  # noqa: F811
     await client.post("/api/auth/setup", json={"username": "admin", "password": "motdepasse"})
     pause = asyncio.create_task(core.discover._pause(1800))
     await asyncio.sleep(0)
-    await core.catalog.add_artist(DAMSO, mode="validation", quality_profile_id=None,
-                                  primary_types=["album"], secondary_types=[])
+    await core.catalog.add_artist(DAMSO, primary_types=["album"], secondary_types=[])
     await asyncio.wait_for(pause, 1)
 
 

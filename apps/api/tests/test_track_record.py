@@ -7,14 +7,14 @@ et 58 n'ont rien envoyé. Ce que le pair a fait la fois d'avant prédisait la su
 from datetime import UTC, datetime, timedelta
 
 from fakes import peer_with_album
-from test_flow import ctx  # noqa: F401
+from test_flow import ctx, hunt_only  # noqa: F401
 
 from soulsick.models import Candidate, CandidateStatus, Transfer, TransferState
 
 
 async def _album(client):
     await client.post("/api/auth/setup", json={"username": "admin", "password": "motdepasse"})
-    r = await client.post("/api/artists", json={"mbid": "x", "mode": "validation", "primary_types": ["album"], "monitor": "all"})
+    r = await client.post("/api/artists", json={"mbid": "x", "primary_types": ["album"], "monitor": "all"})
     aid = r.json()["id"]
     return next(rg["id"] for rg in (await client.get(f"/api/artists/{aid}")).json()["release_groups"]
                 if rg["title"] == "Nevermind")
@@ -39,7 +39,7 @@ async def _past_source(core, rid, username, *, sent: bool, waited: timedelta):
 
 async def _order(client, core, engine, rid):
     engine.results = [peer_with_album("muet"), peer_with_album("fiable")]
-    await core.hunter.hunt(rid)
+    await hunt_only(core, rid)
     return [c["username"] for c in await _proposals(client, rid)]
 
 

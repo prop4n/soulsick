@@ -423,8 +423,7 @@ class ExistingImportService:
         created = a is None
         if created:
             a = await self.core.catalog.add_artist(
-                mbid, mode="validation", quality_profile_id=None, primary_types=["album", "ep"],
-                secondary_types=[], monitor="none",
+                mbid, primary_types=["album", "ep"], secondary_types=[], monitor="none",
             )
         async with self.core.db.session() as s:
             row = await s.get(Artist, a.id)

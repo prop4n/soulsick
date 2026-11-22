@@ -19,7 +19,6 @@ from ..messages import M, Msg, UserError, set_reason
 from ..models import (
     AlbumStatus,
     Artist,
-    ArtistMode,
     Candidate,
     CandidateStatus,
     LibraryFile,
@@ -157,11 +156,7 @@ class HunterService:
                 return None
             artist = await s.get(Artist, rg.artist_id)
             assert artist
-            profile = None
-            if artist.quality_profile_id:
-                profile = await s.get(QualityProfile, artist.quality_profile_id)
-            if profile is None:
-                profile = (await s.execute(select(QualityProfile).order_by(QualityProfile.id))).scalars().first()
+            profile = await self.core.catalog.quality_profile(s)
             assert profile
             return rg, artist, profile
 
@@ -178,9 +173,9 @@ class HunterService:
         self.core.hub.publish("album", {"id": rg_id, "status": status, "status_reason": reason.text if reason else None})
 
     async def hunt(self, rg_id: int, trigger: str = "manual", replace: bool = False) -> None:
-        """`replace`: you asked for this album again — any valid version will do (not only a
-        better format), and the best one starts right away, whatever the artist's mode. The
-        import then replaces the shelved files."""
+        """The best source found starts right away (see _start_best). `replace`: you asked for
+        this album again — any valid version will do, not only a better format. The import then
+        replaces the shelved files."""
         async with self._lock:
             try:
                 await self._hunt(rg_id, trigger, replace)
@@ -321,19 +316,8 @@ class HunterService:
             },
         )
 
-        if artist.mode == ArtistMode.AUTO or replace:
-            await self._set_status(rg_id, AlbumStatus.SEARCHING, None, searched=True)
-            await self._start_best(valid_ids, cfg)
-        else:
-            n = min(cfg.proposals, len(valid))
-            await self._set_status(
-                rg_id, AlbumStatus.PENDING_APPROVAL, M("reason.awaiting", n=n), searched=True
-            )
-            await self.core.journal.emit(
-                "hunt.awaiting_approval",
-                M("hunt.awaiting_approval", label=label, n=n),
-                artist_id=artist.id, release_group_id=rg_id,
-            )
+        await self._set_status(rg_id, AlbumStatus.SEARCHING, None, searched=True)
+        await self._start_best(valid_ids, cfg)
 
     async def _options(self, rg: ReleaseGroup, releases: list) -> list[ReleaseOption]:
         async with self.core.db.session() as s:
@@ -368,6 +352,7 @@ class HunterService:
         scored = await asyncio.to_thread(
             rank_candidates,
             results, options, profile.formats, profile.max_missing_tracks, cfg.min_match, artist_name, records,
+            cfg.preferred_album_mb,
         )
         log.info(
             "%s: %d folders scored in %.1f s (%d MusicBrainz editions, %d distinct tracklists)",
@@ -1161,8 +1146,9 @@ class HunterService:
         return len(missing)
 
     async def abandon(self, candidate_id: int) -> int:
-        """You drop a source: its unfinished files are cancelled, what arrived is kept,
-        and the album waits for your choice (another candidate, or a new search)."""
+        """You drop a source: its unfinished files are cancelled, what arrived is kept. Nothing
+        else starts on its own (cancelling an album goes through here): the album is wanted
+        again, for the next hunt or another source you take."""
         dropped = await self._drop_source(candidate_id, M("reason.abandoned"))
         if dropped is None:
             return 0
@@ -1171,13 +1157,7 @@ class HunterService:
             level="warning", release_group_id=dropped["rg_id"], candidate_id=candidate_id,
         )
         if not dropped["still_active"]:
-            # Nothing else downloading for this album: back to you
-            others = dropped["others"]
-            await self._set_status(
-                dropped["rg_id"],
-                AlbumStatus.PENDING_APPROVAL if others else AlbumStatus.WANTED,
-                M("reason.abandoned_pick") if others else M("reason.abandoned"),
-            )
+            await self._set_status(dropped["rg_id"], AlbumStatus.WANTED, M("reason.abandoned"))
         return len(dropped["ids"])
 
     async def redownload(self, rg_id: int) -> int:
@@ -1225,16 +1205,13 @@ class HunterService:
                 t.completed_at = datetime.now(UTC)
             c.status = CandidateStatus.FAILED
             set_reason(c, "reject_reason", reason)
-            others = (await s.execute(select(func.count()).where(
-                Candidate.release_group_id == rg.id, Candidate.status == CandidateStatus.PROPOSED,
-            ))).scalar_one()
             still_active = (await s.execute(select(func.count()).where(
                 Candidate.release_group_id == rg.id, Candidate.status == CandidateStatus.CHOSEN,
             ))).scalar_one()
             await s.commit()
             out = {
                 "rg_id": rg.id, "label": f"{artist.name} – {rg.title}", "username": c.username,
-                "ids": [t.id for t in pending], "others": others, "still_active": still_active,
+                "ids": [t.id for t in pending], "still_active": still_active,
             }
             targets = [(t.username, t.remote_path) for t in pending]
         for tid in out["ids"]:
@@ -1319,7 +1296,7 @@ class HunterService:
                 )
             ).scalars().first()
             await s.commit()
-            rg_id, label, mode = rg.id, f"{artist.name} – {rg.title}", artist.mode
+            rg_id, label = rg.id, f"{artist.name} – {rg.title}"
             next_id = nxt.id if nxt else None
             next_label = f"{nxt.username} ({nxt.score}/100)" if nxt else None
 
@@ -1338,14 +1315,12 @@ class HunterService:
             "download.failed", M("download.failed", label=label, reason=reason), level="warning",
             release_group_id=rg_id, candidate_id=candidate_id,
         )
-        if try_next and next_id and mode == ArtistMode.AUTO:
+        if try_next and next_id:
             await self.core.journal.emit(
                 "hunt.fallback", M("hunt.fallback", label=label, next=next_label),
                 release_group_id=rg_id, candidate_id=next_id,
             )
             await self.start_download(next_id, by="auto")
-        elif try_next and next_id:
-            await self._set_status(rg_id, AlbumStatus.PENDING_APPROVAL, M("reason.chosen_failed"))
         else:
             await self._set_status(rg_id, AlbumStatus.WANTED, M("reason.last_failed", reason=reason))
 

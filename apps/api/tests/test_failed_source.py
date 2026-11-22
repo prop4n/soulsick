@@ -26,7 +26,7 @@ async def test_les_fichiers_encore_en_file_d_une_source_en_echec_sont_abandonnes
     n'en montrait aucun, le compteur du menu en annonçait 17."""
     client, core, engine, env = ctx
     engine.script[FILE1] = ["hold"]  # jamais répondu
-    rid = await _setup(client, core, engine)
+    rid = await _setup(client, core, engine, start=False)
     cid = (await client.get(f"/api/albums/{rid}")).json()["candidates"][0]["id"]
     await client.post(f"/api/candidates/{cid}/approve")
     assert await _active(client) > 0
@@ -43,7 +43,7 @@ async def test_au_demarrage_les_fantomes_deja_la_sont_nettoyes(ctx):  # noqa: F8
     """Ceux laissés par les versions d'avant : réparés au démarrage."""
     client, core, engine, env = ctx
     engine.script[FILE1] = ["hold"]
-    rid = await _setup(client, core, engine)
+    rid = await _setup(client, core, engine, start=False)
     cid = (await client.get(f"/api/albums/{rid}")).json()["candidates"][0]["id"]
     await client.post(f"/api/candidates/{cid}/approve")
 
