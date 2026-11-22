@@ -34,6 +34,11 @@ class HunterSettings(BaseModel):
     stuck_queue_minutes: int = Field(30, ge=1)
     # Flagged from this attempt on (0 = never)
     stuck_after_attempts: int = Field(2, ge=0)
+    # In automatic mode, the first track is asked from this many comparable sources at once;
+    # the album goes to the first one that sends (1 = no race, the best one only)
+    race_peers: int = Field(3, ge=1)
+    # Nobody sent within this time: the best one keeps the album, as before
+    race_seconds: int = Field(180, ge=1)
 
 
 class LibrarySettings(BaseModel):

@@ -29,8 +29,8 @@ from ..models import (
     Transfer,
     TransferState,
 )
-from ..quality import FORMAT_LABELS, extension_of, is_better_or_equal
-from ..scoring import PeerResult, ReleaseOption, ScoredCandidate, rank_candidates, unique_tracklists
+from ..quality import FORMAT_LABELS, extension_of, is_audio, is_better_or_equal
+from ..scoring import SILENT, PeerResult, ReleaseOption, ScoredCandidate, rank_candidates, unique_tracklists
 from ..slsk.engine import EngineUnavailable
 from .coverage import ACTIVE
 
@@ -87,6 +87,9 @@ class HunterService:
         self.max_attempts = 3
         self.retry_delays: list[float] = [30, 120]
         self._retrying: set[int] = set()
+        # Sources whose first track is being tried (see _race): judged by the race, not one by one
+        self._racing: set[int] = set()
+        self.race_poll = 1.0
         self.current: dict | None = None
         self.last_run_at: datetime | None = None
         self.next_run_at: datetime | None = None
@@ -316,7 +319,7 @@ class HunterService:
 
         if artist.mode == ArtistMode.AUTO or replace:
             await self._set_status(rg_id, AlbumStatus.SEARCHING, None, searched=True)
-            await self.start_download(valid_ids[0], by="auto")
+            await self._start_best(valid_ids, cfg)
         else:
             n = min(cfg.proposals, len(valid))
             await self._set_status(
@@ -395,19 +398,19 @@ class HunterService:
             # folder is taken over and only the files it lacks are asked for. Otherwise each hunt
             # downloaded the whole album again, in a new folder, until the disk was full.
             received: dict[str, Transfer] = {}
-            prev = (await s.execute(
-                select(Candidate).where(
-                    Candidate.release_group_id == rg.id, Candidate.id != c.id,
-                    Candidate.username == c.username, Candidate.directory == c.directory,
-                    Candidate.status == CandidateStatus.FAILED, Candidate.download_dir.is_not(None),
-                ).order_by(Candidate.id.desc())
-            )).scalars().first()
+            prev = await self._previous_attempt(s, c)
             if prev and prev.download_dir and os.path.isdir(prev.download_dir):
                 dest, prev.download_dir = prev.download_dir, None
                 prev_rows = await s.execute(select(Transfer).where(Transfer.candidate_id == prev.id))
                 for t in prev_rows.scalars():
                     if t.state == TransferState.COMPLETE and t.local_path and os.path.isfile(t.local_path):
                         received[t.remote_path] = t
+            # Its own files already asked (the first track, after a race): kept, not asked again
+            own = {
+                t.remote_path: t
+                for t in (await s.execute(select(Transfer).where(Transfer.candidate_id == c.id))).scalars()
+                if t.state not in (TransferState.FAILED, TransferState.ABORTED)
+            }
             c.status = CandidateStatus.CHOSEN
             c.download_dir = dest
             # Lyrics always (small, and Navidrome reads them); covers and the rest only if asked.
@@ -420,6 +423,9 @@ class HunterService:
             ]
             transfers = []
             for f in files:
+                if f["filename"] in own:
+                    transfers.append(own[f["filename"]])
+                    continue
                 done = received.get(f["filename"])
                 if done:
                     # One row per file: the received one moves to this candidate
@@ -451,7 +457,7 @@ class HunterService:
                 if t.state != TransferState.COMPLETE
                 and self.core.transfers.register("download", t.username, t.remote_path, t.id)
             }
-            paths = [f["filename"] for f in files if f["filename"] not in received.keys() | twins]
+            paths = [f["filename"] for f in files if f["filename"] not in received.keys() | own.keys() | twins]
 
         self.core.hub.publish("album", {"id": rg_id, "status": AlbumStatus.DOWNLOADING})
         await self.core.journal.emit(
@@ -477,6 +483,186 @@ class HunterService:
             )
             await self._fail_candidate(candidate_id, e.msg, try_next=False)
 
+    async def _previous_attempt(self, s, c: Candidate) -> Candidate | None:
+        """The same source, already failed for this album, with its folder."""
+        return (await s.execute(
+            select(Candidate).where(
+                Candidate.release_group_id == c.release_group_id, Candidate.id != c.id,
+                Candidate.username == c.username, Candidate.directory == c.directory,
+                Candidate.status == CandidateStatus.FAILED, Candidate.download_dir.is_not(None),
+            ).order_by(Candidate.id.desc())
+        )).scalars().first()
+
+    # --- Race: the album goes to the first source that sends -------------
+
+    async def _start_best(self, valid_ids: list[int], cfg) -> None:
+        """Nearly every peer announces a free slot, and half of the sources chosen that way never
+        send anything: what a peer does is only known by asking. With several comparable
+        sources, the first track is asked from each, and the album goes to the first one that
+        sends (see _race). Otherwise the best one, as before."""
+        contestants = await self._contestants(valid_ids, cfg.race_peers)
+        if len(contestants) < 2:
+            await self.start_download(valid_ids[0], by="auto")
+            return
+        # Before any file is asked: a track arriving at once is judged by the race
+        self._racing.update(contestants)
+        asyncio.create_task(self._race(contestants, cfg.race_seconds))
+
+    async def _contestants(self, valid_ids: list[int], n: int) -> list[int]:
+        """The best source, and the next ones worth as much: same format, a score at most
+        10 points lower, one per peer, none that stayed silent last time."""
+        if n < 2:
+            return valid_ids[:1]
+        async with self.core.db.session() as s:
+            rows = {c.id: c for c in (await s.execute(select(Candidate).where(Candidate.id.in_(valid_ids)))).scalars()}
+        best = rows[valid_ids[0]]
+        out, peers = [best.id], {best.username}
+        for cid in valid_ids[1:]:
+            c = rows[cid]
+            if c.username in peers or c.format != best.format or (c.score or 0) < (best.score or 0) - 10:
+                continue
+            if ((c.score_detail or {}).get("peer") or {}).get("record") == SILENT:
+                continue
+            out.append(cid)
+            peers.add(c.username)
+            if len(out) >= n:
+                break
+        return out
+
+    async def _race(self, ids: list[int], seconds: float) -> None:
+        """The first track of each source is asked at once. The first source that sends (its
+        first bytes, not just a yes) gets the rest of the album; the others are cancelled and
+        go back to the proposals. Nobody within `seconds`: the best one still waiting keeps the
+        album, as before the race. Everybody refused: the best one starts over, as before."""
+        probes: dict[int, int] = {}
+        names: dict[int, str] = {}
+        winner: int | None = None
+        alive: list[int] = []
+        sent: list[int] = []
+        try:
+            for cid in ids:
+                tid = await self._probe(cid)
+                if tid is not None:
+                    probes[cid] = tid
+            async with self.core.db.session() as s:
+                cands = {c.id: c for c in (await s.execute(select(Candidate).where(Candidate.id.in_(ids)))).scalars()}
+                rg = await s.get(ReleaseGroup, cands[ids[0]].release_group_id)
+                artist = await s.get(Artist, rg.artist_id) if rg else None
+                assert rg and artist
+                rg_id, label = rg.id, f"{artist.name} – {rg.title}"
+            names = {cid: cands[cid].username for cid in ids}
+            await self._set_status(rg_id, AlbumStatus.DOWNLOADING, M("reason.racing", n=len(probes)))
+            await self.core.journal.emit(
+                "hunt.race_started",
+                M("hunt.race_started", label=label, n=len(probes), peers=", ".join(names[c] for c in probes)),
+                release_group_id=rg_id, candidate_id=ids[0], data={"candidates": list(probes)},
+            )
+            t0 = time.monotonic()
+            alive = list(probes)
+            while probes:
+                async with self.core.db.session() as s:
+                    rows = {
+                        t.id: t for t in
+                        (await s.execute(select(Transfer).where(Transfer.id.in_(probes.values())))).scalars()
+                    }
+                sent = [
+                    cid for cid, tid in probes.items()
+                    if rows[tid].state == TransferState.COMPLETE or rows[tid].started_at or rows[tid].bytes_transferred
+                ]
+                alive = [
+                    cid for cid, tid in probes.items()
+                    if rows[tid].state not in (TransferState.FAILED, TransferState.ABORTED)
+                ]
+                if sent:
+                    winner = sent[0]  # in rank order: on a tie, the better source
+                    break
+                if not alive or time.monotonic() - t0 >= seconds:
+                    break
+                await asyncio.sleep(self.race_poll)
+            elapsed = round(time.monotonic() - t0)
+            if winner is not None:
+                await self.core.journal.emit(
+                    "hunt.race_won", M("hunt.race_won", label=label, peer=names[winner], seconds=elapsed),
+                    release_group_id=rg_id, candidate_id=winner, data={"seconds": elapsed},
+                )
+            else:
+                winner = next((cid for cid in ids if cid in alive), None)
+                await self.core.journal.emit(
+                    "hunt.race_none",
+                    M("hunt.race_none", label=label, peer=names[ids[0] if winner is None else winner], seconds=elapsed),
+                    level="warning", release_group_id=rg_id, candidate_id=winner,
+                )
+        except Exception:
+            log.exception("race")
+        finally:
+            self._racing.difference_update(ids)
+        # Nobody still waiting (all refused): every first track is dropped, the best starts over
+        keep = winner if winner is not None and winner in alive else None
+        for cid in ids:
+            if cid != keep:
+                await self._give_back(cid, M("reason.race_lost", peer=names.get(winner or -1, "?")) if sent
+                                      else M("reason.race_kept", peer=names.get(keep or ids[0], "?")))
+        await self.start_download(ids[0] if keep is None else keep, by="auto")
+
+    async def _probe(self, candidate_id: int) -> int | None:
+        """Asks only the first track of a source; returns its transfer."""
+        async with self.core.db.session() as s:
+            c = await s.get(Candidate, candidate_id)
+            if not c:
+                return None
+            dest = os.path.join(str(self.core.env.downloads_dir), f"album-{c.release_group_id}", f"candidate-{c.id}")
+            had: set[str] = set()
+            prev = await self._previous_attempt(s, c)
+            if prev and prev.download_dir and os.path.isdir(prev.download_dir):
+                # start_download takes that folder over: the first track goes there too
+                dest = prev.download_dir
+                had = set((await s.execute(select(Transfer.remote_path).where(
+                    Transfer.candidate_id == prev.id, Transfer.state == TransferState.COMPLETE,
+                ))).scalars())
+            first = next(
+                (f for f in c.files if not f.get("extra") and is_audio(f["filename"]) and f["filename"] not in had),
+                None,
+            )
+            if first is None:
+                return None
+            c.status = CandidateStatus.CHOSEN
+            c.download_dir = dest
+            t = Transfer(
+                direction="download", username=c.username, remote_path=first["filename"],
+                local_path=os.path.join(dest, first["filename"].replace("\\", "/").rsplit("/", 1)[-1]),
+                size=first.get("size"), state=TransferState.QUEUED, attempts=1,
+                candidate_id=c.id, release_group_id=c.release_group_id,
+            )
+            s.add(t)
+            await s.commit()
+            tid, username, path = t.id, c.username, t.remote_path
+        if not self.core.transfers.register("download", username, path, tid):
+            await self.core.engine.download(username, path, dest)
+        return tid
+
+    async def _give_back(self, candidate_id: int, reason: Msg) -> None:
+        """A source that lost the race: its first track is cancelled and it goes back to the
+        proposals (the fallback can still pick it). Its file rows are detached: they were only a
+        test, neither a failure of the peer nor a track of the album."""
+        async with self.core.db.session() as s:
+            c = await s.get(Candidate, candidate_id)
+            if not c:
+                return
+            rows = list((await s.execute(select(Transfer).where(Transfer.candidate_id == candidate_id))).scalars())
+            targets = []
+            for t in rows:
+                if t.state not in TERMINAL:
+                    t.state, t.error, t.completed_at = TransferState.ABORTED, reason.text, datetime.now(UTC)
+                    targets.append((t.id, t.username, t.remote_path))
+                t.candidate_id = None
+            c.status = CandidateStatus.PROPOSED
+            c.download_dir = None
+            await s.commit()
+        for tid, username, path in targets:
+            self.core.transfers.forget(tid)
+            await self.core.transfers.stop_on_engine(username, path)
+            self.core.hub.publish("transfer", {"id": tid, "state": TransferState.ABORTED, "speed": 0, "stuck": False})
+
     async def on_transfer_terminal(self, candidate_id: int) -> None:
         """Re-evaluates a candidate when one of its transfers reaches a final state.
 
@@ -488,6 +674,8 @@ class HunterService:
         - cancelled files don't fail the source: it is done with the rest;
         - candidate already dropped but every file arrived after all: import anyway.
         """
+        if candidate_id in self._racing:
+            return  # its first track only: the race decides
         async with self.core.db.session() as s:
             c = await s.get(Candidate, candidate_id)
             if not c or c.status not in (CandidateStatus.CHOSEN, CandidateStatus.FAILED):
