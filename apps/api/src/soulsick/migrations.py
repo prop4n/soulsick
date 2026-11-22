@@ -59,8 +59,32 @@ async def _everything_automatic(core: Core) -> None:
         await core.settings.save(settings)
 
 
+async def _follow_means_upcoming(core: Core) -> None:
+    """Following an artist now means wanting its upcoming releases; an album you ask for is
+    hunted whether its artist is followed or not.
+
+    Before, a paused artist's albums were never hunted, even when marked wanted: they stop
+    being wanted, so that nothing starts downloading that didn't before. A followed artist
+    counts as followed since it was added."""
+    async with core.db.session() as s:
+        paused = select(Artist.id).where(Artist.monitored.is_(False))
+        rgs = list((await s.execute(select(ReleaseGroup).where(
+            ReleaseGroup.artist_id.in_(paused), ReleaseGroup.monitored.is_(True),
+            ReleaseGroup.status.in_([AlbumStatus.WANTED, AlbumStatus.FAILED]),
+        ))).scalars())
+        for rg in rgs:
+            rg.monitored = False
+            rg.status = AlbumStatus.IGNORED
+            set_reason(rg, "status_reason", None)
+        followed = select(Artist).where(Artist.monitored.is_(True), Artist.followed_at.is_(None))
+        for a in (await s.execute(followed)).scalars():
+            a.followed_at = a.added_at
+        await s.commit()
+
+
 STEPS: list[tuple[str, Callable[[Core], Awaitable[None]]]] = [
     ("everything_automatic", _everything_automatic),
+    ("follow_means_upcoming", _follow_means_upcoming),
 ]
 
 

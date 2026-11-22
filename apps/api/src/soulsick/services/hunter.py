@@ -130,13 +130,12 @@ class HunterService:
         """Hunts wanted albums; `force` ignores the delay between two unsuccessful attempts."""
         cutoff = datetime.now(UTC) - (timedelta(0) if force else timedelta(hours=RETRY_HOURS))
         async with self.core.db.session() as s:
+            # Wanted: asked by you, or upcoming from an artist you follow
             res = await s.execute(
                 select(ReleaseGroup.id)
-                .join(Artist, Artist.id == ReleaseGroup.artist_id)
                 .where(
                     ReleaseGroup.status == AlbumStatus.WANTED,
                     ReleaseGroup.monitored.is_(True),
-                    Artist.monitored.is_(True),
                     or_(ReleaseGroup.last_searched_at.is_(None), ReleaseGroup.last_searched_at < cutoff),
                 )
                 .order_by(ReleaseGroup.last_searched_at.is_not(None), ReleaseGroup.last_searched_at)

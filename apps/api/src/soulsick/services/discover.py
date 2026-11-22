@@ -194,11 +194,14 @@ class DiscoverService:
                 .where(SimilarArtist.artist_id == artist_id)
                 .order_by(SimilarArtist.score.desc())
             )).scalars())
-            followed = {mbid: aid for mbid, aid in await s.execute(select(Artist.mbid, Artist.id))}
+            rows_known = await s.execute(select(Artist.mbid, Artist.id, Artist.monitored))
+            known = {mbid: (aid, f) for mbid, aid, f in rows_known}
         return [
             {
                 "mbid": x.mbid, "name": x.name, "comment": x.comment, "type": x.type,
-                "followed_id": followed.get(x.mbid),
+                # In the catalog (its page exists), and whether you follow it
+                "followed_id": known[x.mbid][0] if x.mbid in known else None,
+                "followed": known.get(x.mbid, (None, False))[1],
             }
             for x in rows
         ]

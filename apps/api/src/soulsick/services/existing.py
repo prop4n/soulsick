@@ -417,20 +417,19 @@ class ExistingImportService:
         return {"moved": len(moved), "skipped": skipped, "album_dir": album_dir, "release_group_id": rg_row.id}
 
     async def _ensure_artist(self, mbid: str, follow: bool) -> Artist:
-        """Artiste présent dans le catalogue. Créé ici : suivi seulement si demandé (jamais de téléchargement)."""
+        """Artiste présent dans le catalogue. Créé ici : suivi seulement si demandé (seules ses
+        sorties à venir sont alors voulues). Un artiste déjà là n'est jamais dé-suivi."""
         async with self.core.db.session() as s:
             a = (await s.execute(select(Artist).where(Artist.mbid == mbid))).scalar_one_or_none()
-        created = a is None
-        if created:
+        if a is None:
             a = await self.core.catalog.add_artist(
-                mbid, primary_types=["album", "ep"], secondary_types=[], monitor="none",
+                mbid, primary_types=["album", "ep"], secondary_types=[], follow=follow,
             )
+        elif follow and not a.monitored:
+            await self.core.catalog.follow(a.id)
         async with self.core.db.session() as s:
             row = await s.get(Artist, a.id)
             assert row
-            if follow != row.monitored and (created or follow):
-                row.monitored = follow
-                await s.commit()
             return row
 
     async def _ensure_release_group(self, mbid: str, artist_id: int) -> ReleaseGroup:

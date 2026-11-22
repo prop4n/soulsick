@@ -1,14 +1,16 @@
 <script setup lang="ts">
 import type { SimilarArtist } from '@/lib/types'
 import { PlusIcon } from '@lucide/vue'
-import { useQuery } from '@tanstack/vue-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/vue-query'
 import { computed, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
-import AddArtistDialog from '@/components/AddArtistDialog.vue'
+import { toast } from 'vue-sonner'
+import { Spinner } from '@/components/ui/spinner'
 import { api } from '@/lib/api'
 
 const props = defineProps<{ artistId: number }>()
 const { t } = useI18n()
+const qc = useQueryClient()
 
 const { data } = useQuery({
   queryKey: ['similar', computed(() => props.artistId)],
@@ -17,27 +19,38 @@ const { data } = useQuery({
 })
 const list = computed(() => (data.value ?? []).slice(0, 12))
 
-const following = ref<{ mbid: string, name: string } | null>(null)
-const addOpen = ref(false)
-function follow(a: SimilarArtist) {
-  following.value = { mbid: a.mbid, name: a.name }
-  addOpen.value = true
-}
+/** One click: followed (its discography is read in the background for a new one) */
+const pending = ref<string | null>(null)
+const follow = useMutation({
+  mutationFn: (a: SimilarArtist) => {
+    pending.value = a.mbid
+    return a.followed_id
+      ? api.post(`/artists/${a.followed_id}/follow`)
+      : api.post('/artists/bulk', { mbids: [a.mbid] })
+  },
+  onSuccess: (_, a) => {
+    toast.success(t('artist.followDone', { name: a.name }))
+    qc.invalidateQueries({ queryKey: ['similar'] })
+    qc.invalidateQueries({ queryKey: ['artists'] })
+  },
+  onError: e => toast.error(e.message),
+  onSettled: () => (pending.value = null),
+})
 </script>
 
 <template>
   <section class="flex flex-col">
-    <h2 class="text-[14px] font-semibold">
+    <h2 class="text-[14px] font-medium">
       {{ t('discover.similar') }}
     </h2>
-    <p v-if="!list.length" class="pt-3 text-[12.5px] text-faint">
+    <p v-if="!list.length" class="pt-3 text-[13px] text-faint">
       {{ t('discover.similarPending') }}
     </p>
     <ul v-else class="flex flex-col pt-2">
       <li
         v-for="a in list"
         :key="a.mbid"
-        class="group flex items-center gap-2 border-b border-white/[0.04] py-1.5 last:border-b-0"
+        class="flex min-h-8 items-center gap-2 border-b border-border py-1 last:border-b-0"
       >
         <RouterLink
           v-if="a.followed_id"
@@ -47,18 +60,19 @@ function follow(a: SimilarArtist) {
           {{ a.name }}
         </RouterLink>
         <span v-else class="min-w-0 flex-1 truncate text-[13px]" :title="a.comment || undefined">{{ a.name }}</span>
-        <span v-if="a.followed_id" class="text-[11px] text-faint">{{ t('discover.followed') }}</span>
+        <span v-if="a.followed" class="text-[12px] text-faint">{{ t('discover.followed') }}</span>
         <button
           v-else
           type="button"
-          class="flex items-center gap-1 rounded px-1.5 text-[11.5px] text-muted-foreground opacity-70 hover:bg-white/5 hover:text-foreground group-hover:opacity-100"
-          @click="follow(a)"
+          class="flex items-center gap-1 rounded px-2 text-[12px] text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-60"
+          :disabled="pending === a.mbid"
+          @click="follow.mutate(a)"
         >
-          <PlusIcon class="size-3" />
+          <Spinner v-if="pending === a.mbid" class="size-3" />
+          <PlusIcon v-else class="size-3" />
           {{ t('discover.follow') }}
         </button>
       </li>
     </ul>
-    <AddArtistDialog v-model:open="addOpen" :presets="following ? [following] : []" />
   </section>
 </template>

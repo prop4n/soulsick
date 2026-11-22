@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import type { Coverage, CoverageSource, FileLyrics, Release } from '@/lib/types'
 import { isPartial } from '@/lib/types'
-import { ArrowLeftIcon, ExternalLinkIcon, FolderInputIcon, RadarIcon, XIcon } from '@lucide/vue'
+import { ArrowLeftIcon, DownloadIcon, ExternalLinkIcon, FolderInputIcon, RadarIcon, XIcon } from '@lucide/vue'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/vue-query'
 import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
@@ -26,7 +26,6 @@ import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from '@/components/u
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Spinner } from '@/components/ui/spinner'
-import { Switch } from '@/components/ui/switch'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { useCoverAccent } from '@/composables/coverAccent'
 import { useAlbum } from '@/composables/queries'
@@ -159,10 +158,19 @@ const approve = useMutation({
   onError: e => toast.error(e.message),
   onSettled: () => (approving.value = null),
 })
-const monitor = useMutation({
+const want = useMutation({
   mutationFn: (monitored: boolean) => api.patch(`/albums/${id.value}`, { monitored }),
-  onSuccess: refresh,
+  onSuccess: (_, on) => {
+    if (on)
+      toast.info(t('artist.getStarted'))
+    refresh()
+  },
+  onError: e => toast.error(e.message),
 })
+/** Not in the library and not asked for */
+const gettable = computed(() => album.value?.status === 'ignored')
+/** Asked for, waiting for the hunt or after a failed try */
+const wanted = computed(() => !!album.value?.monitored && ['wanted', 'failed'].includes(album.value.status))
 const selectRelease = useMutation({
   mutationFn: (rid: number) => api.patch(`/albums/${id.value}`, { selected_release_id: rid }),
   onSuccess: () => {
@@ -260,10 +268,21 @@ const dismiss = useMutation({
               </p>
             </div>
             <div class="flex flex-wrap items-center gap-2">
-              <label class="mr-2 flex items-center gap-2 text-[12.5px] text-muted-foreground">
-                <Switch :model-value="album.monitored" @update:model-value="(v: boolean) => monitor.mutate(v)" />
-                {{ t('album.followed') }}
-              </label>
+              <Button v-if="gettable" size="sm" :disabled="want.isPending.value" @click="want.mutate(true)">
+                <DownloadIcon data-icon="inline-start" />
+                {{ t('album.get') }}
+              </Button>
+              <Button
+                v-else-if="wanted"
+                variant="ghost"
+                size="sm"
+                class="text-muted-foreground"
+                :disabled="want.isPending.value"
+                @click="want.mutate(false)"
+              >
+                <XIcon data-icon="inline-start" />
+                {{ t('album.stopWanting') }}
+              </Button>
               <Button v-if="importable" size="sm" :disabled="importNow.isPending.value" @click="importNow.mutate()">
                 <FolderInputIcon data-icon="inline-start" />
                 {{ t('album.importNow') }}
@@ -307,6 +326,7 @@ const dismiss = useMutation({
                 {{ t('album.rejectAll') }}
               </Button>
               <Button
+                v-if="!gettable"
                 size="sm"
                 variant="outline"
                 :disabled="hunt.isPending.value || album.status === 'searching' || album.status === 'downloading'"
