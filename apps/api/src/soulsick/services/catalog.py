@@ -91,13 +91,16 @@ class CatalogService:
         *,
         primary_types: list[str],
         secondary_types: list[str],
-        monitor: str = "none",  # none | future | all — par défaut rien : tu choisis ensuite
+        follow: bool = True,
+        monitor: str = "none",  # none | all : "all" veut aussi toute la discographie existante
     ) -> Artist:
+        """Suivre = ses sorties à venir sont voulues. Le passé ne l'est que si tu le demandes."""
         a, created = await self._create_artist(
-            mbid, primary_types=primary_types, secondary_types=secondary_types,
+            mbid, primary_types=primary_types, secondary_types=secondary_types, monitored=follow,
         )
         if created:
-            await self.sync_artist(a.id, initial_monitor=monitor)
+            initial = "all" if monitor == "all" else "future" if follow else "none"
+            await self.sync_artist(a.id, initial_monitor=initial)
         return a
 
     async def _create_artist(
@@ -120,6 +123,7 @@ class CatalogService:
                 primary_types=primary_types,
                 secondary_types=secondary_types,
                 monitored=monitored,
+                followed_at=datetime.now(UTC) if monitored else None,
             )
             s.add(a)
             await s.commit()
@@ -136,14 +140,16 @@ class CatalogService:
         self.core.discover.soon()
         return a, True
 
-    async def add_artists(self, mbids: list[str], *, monitor: str = "none", **settings) -> int:
+    async def add_artists(
+        self, mbids: list[str], *, follow: bool = True, monitor: str = "none", **settings,
+    ) -> int:
         """Follows several artists with the same settings (MusicBrainz allows one request per
         second). Every artist is created first, a second each, so they all show up quickly;
         the discographies, several requests each, come after. One that fails doesn't stop the others."""
         created: list[int] = []
         for mbid in mbids:
             try:
-                a, new = await self._create_artist(mbid, **settings)
+                a, new = await self._create_artist(mbid, monitored=follow, **settings)
             except Exception as e:
                 await self.core.journal.emit(
                     "musicbrainz.sync_failed", M("musicbrainz.sync_failed", name=mbid, error=str(e)),
@@ -152,8 +158,9 @@ class CatalogService:
                 continue
             if new:
                 created.append(a.id)
+        initial = "all" if monitor == "all" else "future" if follow else "none"
         for aid in created:
-            await self.sync_artist(aid, initial_monitor=monitor)  # gère ses propres erreurs
+            await self.sync_artist(aid, initial_monitor=initial)  # gère ses propres erreurs
         return len(created)
 
     async def from_library(self) -> int:
@@ -207,6 +214,57 @@ class CatalogService:
             )
         return albums_added
 
+    async def follow(self, artist_id: int) -> bool:
+        """Follows an artist from now on: its upcoming releases are wanted, its past stays as it is.
+
+        An artist the catalog only knows by the albums on disk has its discography read first,
+        with nothing wanted: otherwise the next sync would take all of it for new releases.
+        False if MusicBrainz didn't answer: the artist stays as it was."""
+        async with self.core.db.session() as s:
+            artist = await s.get(Artist, artist_id)
+            if not artist:
+                return False
+            read = artist.last_synced_at is not None
+        if not read:
+            await self.sync_artist(artist_id, initial_monitor="none")
+        today = datetime.now(UTC).date().isoformat()
+        upcoming: list[str] = []
+        async with self.core.db.session() as s:
+            artist = await s.get(Artist, artist_id)
+            if not artist or artist.last_synced_at is None:
+                return False
+            if not artist.monitored:
+                artist.monitored = True
+                artist.followed_at = datetime.now(UTC)
+            for rg in (await s.execute(select(ReleaseGroup).where(of_artist(artist_id)))).scalars():
+                upcoming_type = wants(artist, rg.primary_type, rg.secondary_types)
+                if (rg.first_release_date or "") >= today and upcoming_type and _set_monitored(rg, True):
+                    upcoming.append(rg.title)
+            await s.commit()
+            name = artist.name
+        await self.core.journal.emit(
+            "artist.followed", M("artist.followed", name=name, n=len(upcoming)),
+            artist_id=artist_id, data={"upcoming": upcoming},
+        )
+        return True
+
+    async def unfollow(self, artist_id: int) -> None:
+        """Its upcoming releases are no longer wanted; what you asked for yourself stays."""
+        today = datetime.now(UTC).date().isoformat()
+        async with self.core.db.session() as s:
+            artist = await s.get(Artist, artist_id)
+            if not artist:
+                return
+            artist.monitored = False
+            for rg in (await s.execute(select(ReleaseGroup).where(of_artist(artist_id)))).scalars():
+                if rg.status == AlbumStatus.WANTED and (rg.first_release_date or "9999") > today:
+                    _set_monitored(rg, False)
+            await s.commit()
+            name = artist.name
+        await self.core.journal.emit(
+            "artist.unfollowed", M("artist.unfollowed", name=name), artist_id=artist_id,
+        )
+
     async def sync_artist(self, artist_id: int, initial_monitor: str | None = None) -> None:
         """Récupère la discographie et marque comme recherchés les albums suivis non présents."""
         async with self.core.db.session() as s:
@@ -243,6 +301,7 @@ class CatalogService:
             new_rgs: list[ReleaseGroup] = []
             shared: list[str] = []
             now_str = datetime.now(UTC).date().isoformat()
+            since = (artist.followed_at or artist.added_at or datetime.now(UTC)).date().isoformat()
             for g in groups:
                 rg = existing.get(g["mbid"])
                 if rg:
@@ -261,6 +320,10 @@ class CatalogService:
                     follow = False
                 elif initial_monitor == "future":
                     follow = follow and (g["first_release_date"] or "9999") >= now_str
+                elif initial_monitor is None:
+                    # Followed: only what comes out after you followed it. An old release added
+                    # late to MusicBrainz is not wanted on its own
+                    follow = follow and (g["first_release_date"] or "9999") >= since
                 rg = ReleaseGroup(
                     mbid=g["mbid"],
                     artist_id=artist_id,
@@ -368,8 +431,7 @@ class CatalogService:
         return rg
 
     async def bulk_monitor(self, artist_id: int, scope: str, section: str | None = None) -> int:
-        """Suivi en masse. scope : all | none | future. section : album, ep, single, live… (comme l'affichage)."""
-        today = datetime.now(UTC).date().isoformat()
+        """Vouloir en masse. scope : all | none. section : album, ep, single, live… (comme l'affichage)."""
         changed: list[str] = []
         async with self.core.db.session() as s:
             artist = await s.get(Artist, artist_id)
@@ -379,8 +441,7 @@ class CatalogService:
             for rg in rgs:
                 if section and section_of(rg) != section:
                     continue
-                want = scope == "all" or (scope == "future" and (rg.first_release_date or "9999") >= today)
-                if _set_monitored(rg, want):
+                if _set_monitored(rg, scope == "all"):
                     changed.append(rg.title)
             await s.commit()
             name = artist.name
@@ -394,11 +455,12 @@ class CatalogService:
         return len(changed)
 
     async def apply_type_filter(self, artist_id: int) -> int:
-        """Après un changement des types suivis : on arrête de suivre l'existant qui n'en fait plus partie.
+        """Après un changement des types suivis : les sorties à venir d'un type qui n'en fait plus
+        partie ne sont plus voulues. Le reste ne bouge pas : ce que tu as demandé reste demandé.
 
-        Ajouter un type ne lance rien automatiquement (pas d'avalanche de téléchargements) :
-        les actions groupées servent à ça.
+        Ajouter un type ne lance rien automatiquement (pas d'avalanche de téléchargements).
         """
+        today = datetime.now(UTC).date().isoformat()
         changed: list[str] = []
         async with self.core.db.session() as s:
             artist = await s.get(Artist, artist_id)
@@ -406,7 +468,9 @@ class CatalogService:
                 return 0
             rgs = list((await s.execute(select(ReleaseGroup).where(of_artist(artist_id)))).scalars())
             for rg in rgs:
-                if rg.monitored and not wants(artist, rg.primary_type, rg.secondary_types) and _set_monitored(rg, False):
+                upcoming = rg.status == AlbumStatus.WANTED and (rg.first_release_date or "9999") > today
+                dropped = upcoming and not wants(artist, rg.primary_type, rg.secondary_types)
+                if dropped and _set_monitored(rg, False):
                     changed.append(rg.title)
             await s.commit()
             name = artist.name

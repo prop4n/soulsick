@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import type { Artist } from '@/lib/types'
 import { PlusIcon, SearchIcon, UsersRoundIcon } from '@lucide/vue'
 import { computed, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
@@ -9,33 +10,31 @@ import { Button } from '@/components/ui/button'
 import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from '@/components/ui/empty'
 import { InputGroup, InputGroupAddon, InputGroupInput } from '@/components/ui/input-group'
 import { Skeleton } from '@/components/ui/skeleton'
-import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
+import { Toggle } from '@/components/ui/toggle'
 import { useArtists } from '@/composables/queries'
-import { cn } from '@/lib/utils'
 
 const { t } = useI18n()
 const { data: artists, isPending } = useArtists()
 const q = ref('')
-const filter = ref<'all' | 'followed' | 'paused' | 'attention'>('all')
+const attentionOnly = ref(false)
 const addOpen = ref(false)
 
 const list = computed(() => {
   const needle = q.value.trim().toLowerCase()
-  return (artists.value ?? []).filter((a) => {
-    if (needle && !a.name.toLowerCase().includes(needle))
-      return false
-    if (filter.value === 'followed')
-      return a.monitored
-    if (filter.value === 'attention')
-      return a.stats.attention > 0
-    if (filter.value === 'paused')
-      return !a.monitored
-    return true
-  })
+  return (artists.value ?? []).filter(a =>
+    (!needle || a.name.toLowerCase().includes(needle)) && (!attentionOnly.value || a.stats.attention > 0))
 })
+/** Followed: their upcoming releases come on their own */
+const followed = computed(() => list.value.filter(a => a.monitored))
+/** Known through the albums on disk, not followed */
+const library = computed(() => list.value.filter(a => !a.monitored))
+const attention = computed(() => (artists.value ?? []).filter(a => a.stats.attention > 0).length)
 
-function completion(a: { stats: { imported: number, monitored: number } }) {
-  return a.stats.monitored ? a.stats.imported / a.stats.monitored : 0
+function meta(a: Artist) {
+  const parts = [t('artists.inLibrary', a.stats.imported ?? 0)]
+  if (a.stats.wanted)
+    parts.push(t('artists.onTheWay', a.stats.wanted))
+  return parts.join(' · ')
 }
 </script>
 
@@ -50,38 +49,26 @@ function completion(a: { stats: { imported: number, monitored: number } }) {
       </template>
     </PageHeader>
 
-    <div class="mb-6 flex flex-col gap-3 sm:flex-row sm:items-center">
+    <div class="mb-8 flex flex-col gap-3 sm:flex-row sm:items-center">
       <InputGroup class="sm:max-w-xs">
         <InputGroupAddon>
           <SearchIcon />
         </InputGroupAddon>
         <InputGroupInput v-model="q" :placeholder="t('common.filter')" />
       </InputGroup>
-      <ToggleGroup v-model="filter" type="single" variant="outline" size="sm" class="justify-start">
-        <ToggleGroupItem value="all">
-          {{ t('common.all') }}
-        </ToggleGroupItem>
-        <ToggleGroupItem value="followed">
-          {{ t('artists.filters.followed') }}
-        </ToggleGroupItem>
-        <ToggleGroupItem value="paused">
-          {{ t('artists.filters.paused') }}
-        </ToggleGroupItem>
-        <ToggleGroupItem value="attention">
-          {{ t('artists.filters.attention') }}
-        </ToggleGroupItem>
-      </ToggleGroup>
-      <span class="font-mono text-[11.5px] text-faint tnum sm:ml-auto">{{ list.length }} / {{ artists?.length ?? 0 }}</span>
+      <Toggle v-if="attention" v-model="attentionOnly" variant="outline" size="sm" class="w-fit">
+        {{ t('artists.attention', attention) }}
+      </Toggle>
     </div>
 
-    <div v-if="isPending" class="grid grid-cols-2 gap-x-5 gap-y-7 sm:grid-cols-3 lg:grid-cols-4 2xl:grid-cols-5">
+    <div v-if="isPending" class="grid grid-cols-2 gap-x-6 gap-y-8 sm:grid-cols-3 lg:grid-cols-4 2xl:grid-cols-5">
       <div v-for="i in 10" :key="i" class="flex flex-col gap-2">
         <Skeleton class="aspect-square w-full" />
         <Skeleton class="h-4 w-2/3" />
       </div>
     </div>
 
-    <Empty v-else-if="!artists?.length" class="rounded-xl bg-card/50 py-16">
+    <Empty v-else-if="!artists?.length" class="rounded-xl bg-card py-16">
       <EmptyHeader>
         <EmptyMedia variant="icon">
           <UsersRoundIcon />
@@ -99,39 +86,72 @@ function completion(a: { stats: { imported: number, monitored: number } }) {
       </EmptyContent>
     </Empty>
 
-    <div v-else class="grid grid-cols-2 gap-x-5 gap-y-7 sm:grid-cols-3 lg:grid-cols-4 2xl:grid-cols-5">
-      <RouterLink
-        v-for="a in list"
-        :key="a.id"
-        :to="{ name: 'artist', params: { id: a.id } }"
-        class="group flex flex-col gap-2.5"
-      >
-        <div class="relative">
-          <CoverArt
-            :mbid="a.stats.cover_mbid"
-            :size="500"
-            :alt="a.name"
-            :class="cn('w-full transition-[filter,opacity] duration-300 group-hover:brightness-110', !a.monitored && 'opacity-50 grayscale')"
-          />
-          <span
-            v-if="a.stats.attention"
-            class="absolute top-2 right-2 rounded-[4px] bg-background/90 px-1.5 font-mono text-[10.5px] leading-[18px] text-warning ring-1 ring-warning/30 backdrop-blur tnum"
-          >{{ t('artists.toHandle', { n: a.stats.attention }) }}</span>
-          <!-- Edge: share of followed albums already in the library -->
-          <div class="absolute inset-x-0 bottom-0 h-[3px] bg-background/60">
-            <div class="h-full bg-success/80" :style="{ width: `${completion(a) * 100}%` }" />
-          </div>
+    <template v-else>
+      <section class="flex flex-col gap-4">
+        <div class="flex items-baseline gap-3">
+          <h2 class="text-[16px] font-medium">
+            {{ t('artists.followed') }}
+          </h2>
+          <span class="text-[12px] text-faint tnum">{{ followed.length }}</span>
         </div>
-        <div class="flex min-w-0 flex-col gap-0.5">
-          <span class="truncate text-[13.5px] font-medium group-hover:text-primary">{{ a.name }}</span>
-          <div class="flex items-center gap-2 text-[11.5px] text-faint">
-            <span class="font-mono tnum">{{ a.stats.imported }}/{{ a.stats.monitored }}</span>
-            <span>{{ t('artists.inLibrary') }}</span>
-            <span v-if="!a.monitored" class="ml-auto">{{ t('artists.mode.paused') }}</span>
-          </div>
+        <p v-if="!followed.length" class="text-[13px] text-muted-foreground">
+          {{ q || attentionOnly ? t('artists.noMatch') : t('artists.noneFollowed') }}
+        </p>
+        <div v-else class="grid grid-cols-2 gap-x-6 gap-y-8 sm:grid-cols-3 lg:grid-cols-4 2xl:grid-cols-5">
+          <RouterLink
+            v-for="a in followed"
+            :key="a.id"
+            :to="{ name: 'artist', params: { id: a.id } }"
+            class="group flex flex-col gap-3"
+          >
+            <div class="relative">
+              <CoverArt
+                :mbid="a.stats.cover_mbid"
+                :size="500"
+                :alt="a.name"
+                class="w-full transition-[filter] duration-150 group-hover:brightness-110"
+              />
+              <span
+                v-if="a.stats.attention"
+                class="absolute top-2 right-2 rounded-[4px] bg-background/90 px-2 text-[12px] leading-5 text-warning tnum"
+              >{{ t('artists.toHandle', { n: a.stats.attention }) }}</span>
+            </div>
+            <div class="flex min-w-0 flex-col gap-1">
+              <span class="truncate text-[14px] font-medium group-hover:text-primary">{{ a.name }}</span>
+              <span class="truncate text-[12px] text-faint tnum">{{ meta(a) }}</span>
+            </div>
+          </RouterLink>
         </div>
-      </RouterLink>
-    </div>
+      </section>
+
+      <section v-if="library.length" class="mt-12 flex flex-col gap-4">
+        <div class="flex flex-col gap-1">
+          <div class="flex items-baseline gap-3">
+            <h2 class="text-[16px] font-medium">
+              {{ t('artists.library') }}
+            </h2>
+            <span class="text-[12px] text-faint tnum">{{ library.length }}</span>
+          </div>
+          <p class="text-[13px] text-muted-foreground">
+            {{ t('artists.libraryHint') }}
+          </p>
+        </div>
+        <div class="grid grid-cols-3 gap-x-4 gap-y-6 sm:grid-cols-4 lg:grid-cols-6 2xl:grid-cols-8">
+          <RouterLink
+            v-for="a in library"
+            :key="a.id"
+            :to="{ name: 'artist', params: { id: a.id } }"
+            class="group flex flex-col gap-2"
+          >
+            <CoverArt :mbid="a.stats.cover_mbid" :size="250" :alt="a.name" class="w-full transition-[filter] duration-150 group-hover:brightness-110" />
+            <div class="flex min-w-0 flex-col">
+              <span class="truncate text-[13px] group-hover:text-primary">{{ a.name }}</span>
+              <span class="truncate text-[12px] text-faint tnum">{{ t('artists.inLibrary', a.stats.imported ?? 0) }}</span>
+            </div>
+          </RouterLink>
+        </div>
+      </section>
+    </template>
 
     <AddArtistDialog v-model:open="addOpen" />
   </div>

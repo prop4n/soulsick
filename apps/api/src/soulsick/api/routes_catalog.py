@@ -43,15 +43,24 @@ async def mb_search(q: str, core: Core = Depends(get_core)) -> list[dict]:
     except MusicBrainzError as e:
         raise HTTPException(502, str(e)) from e
     async with core.db.session() as s:
-        known = set((await s.execute(select(Artist.mbid))).scalars())
-    return [r | {"in_library": r["mbid"] in known} for r in results]
+        known = {mbid: (aid, followed) for mbid, aid, followed in await s.execute(
+            select(Artist.mbid, Artist.id, Artist.monitored)
+        )}
+    # Known: in the catalog (followed, or only through albums on disk)
+    return [
+        r | {"artist_id": known[r["mbid"]][0] if r["mbid"] in known else None,
+             "followed": known.get(r["mbid"], (None, False))[1]}
+        for r in results
+    ]
 
 
 class ArtistIn(BaseModel):
     mbid: str
     primary_types: list[str] = ["album", "ep"]
     secondary_types: list[str] = []
-    monitor: Literal["none", "future", "all"] = "none"
+    # Followed: its upcoming releases are wanted. "all": its whole discography too
+    follow: bool = True
+    monitor: Literal["none", "all"] = "none"
 
 
 class ArtistsIn(BaseModel):
@@ -60,11 +69,13 @@ class ArtistsIn(BaseModel):
     mbids: list[str] = Field(min_length=1, max_length=100)
     primary_types: list[str] = ["album", "ep"]
     secondary_types: list[str] = []
-    monitor: Literal["none", "future", "all"] = "none"
+    follow: bool = True
+    monitor: Literal["none", "all"] = "none"
 
 
 class ArtistPatch(BaseModel):
-    monitored: bool | None = None
+    """Following goes through /artists/{aid}/follow: it also reads the discography."""
+
     primary_types: list[str] | None = None
     secondary_types: list[str] | None = None
 
@@ -131,6 +142,7 @@ async def add_artist(body: ArtistIn, core: Core = Depends(get_core)) -> dict:
             body.mbid,
             primary_types=body.primary_types,
             secondary_types=body.secondary_types,
+            follow=body.follow,
             monitor=body.monitor,
         )
     except MusicBrainzError as e:
@@ -148,6 +160,7 @@ async def add_artists(body: ArtistsIn, core: Core = Depends(get_core)) -> dict:
         mbids,
         primary_types=body.primary_types,
         secondary_types=body.secondary_types,
+        follow=body.follow,
         monitor=body.monitor,
     ))
     return {"queued": len(mbids)}
@@ -184,7 +197,6 @@ async def patch_artist(aid: int, body: ArtistPatch, core: Core = Depends(get_cor
         await s.commit()
         await s.refresh(a)
     labels = {
-        "monitored": lambda v: M("artist.change.monitored_on" if v else "artist.change.monitored_off"),
         "primary_types": lambda v: M("artist.change.primary_types", value=", ".join(v)),
         "secondary_types": lambda v: M("artist.change.secondary_types", value=", ".join(v) or M("word.none")),
     }
@@ -200,13 +212,47 @@ async def patch_artist(aid: int, body: ArtistPatch, core: Core = Depends(get_cor
 
 
 class MonitorIn(BaseModel):
-    scope: Literal["all", "none", "future"]
+    scope: Literal["all", "none"]
     section: str | None = None
+
+
+async def _hunt_wanted(core: Core, ids: list[int]) -> None:
+    """Wanted just now: hunted at once, one after the other (not at the next pass)."""
+    async with core.db.session() as s:
+        wanted = list((await s.execute(select(ReleaseGroup.id).where(
+            ReleaseGroup.id.in_(ids), ReleaseGroup.status == AlbumStatus.WANTED,
+            ReleaseGroup.monitored.is_(True),
+        ))).scalars())
+    for rid in wanted:
+        await core.hunter.hunt(rid, trigger="manual")
 
 
 @router.post("/artists/{aid}/monitor")
 async def bulk_monitor(aid: int, body: MonitorIn, core: Core = Depends(get_core)) -> dict:
-    return {"changed": await core.catalog.bulk_monitor(aid, body.scope, body.section)}
+    """"all": every release of the section is wanted (what is missing gets hunted), "none": none."""
+    async with core.db.session() as s:
+        ids = list((await s.execute(select(ReleaseGroup.id).where(of_artist(aid)))).scalars())
+    changed = await core.catalog.bulk_monitor(aid, body.scope, body.section)
+    if body.scope == "all" and changed:
+        asyncio.create_task(_hunt_wanted(core, ids))
+    return {"changed": changed}
+
+
+@router.post("/artists/{aid}/follow")
+async def follow_artist(aid: int, core: Core = Depends(get_core)) -> dict:
+    async with core.db.session() as s:
+        if not await s.get(Artist, aid):
+            raise http_error(404, "error.artist_not_found")
+    if not await core.catalog.follow(aid):
+        # Its discography couldn't be read: the journal says why, nothing changed
+        raise http_error(502, "error.follow_failed")
+    return {"ok": True}
+
+
+@router.delete("/artists/{aid}/follow")
+async def unfollow_artist(aid: int, core: Core = Depends(get_core)) -> dict:
+    await core.catalog.unfollow(aid)
+    return {"ok": True}
 
 
 @router.delete("/artists/{aid}")
@@ -427,6 +473,9 @@ class AlbumPatch(BaseModel):
 async def patch_album(rid: int, body: AlbumPatch, core: Core = Depends(get_core)) -> dict:
     if body.monitored is not None:
         await core.catalog.set_album_monitored(rid, body.monitored)
+        if body.monitored:
+            # "Get it": hunted now, whether its artist is followed or not
+            asyncio.create_task(_hunt_wanted(core, [rid]))
     if body.selected_release_id is not None:
         async with core.db.session() as s:
             rg = await s.get(ReleaseGroup, rid)

@@ -49,7 +49,7 @@ async def test_le_profil_le_plus_utilise_par_les_suivis_reste_celui_de_tous(ctx)
         artists=[(True, "MP3 320"), (True, "MP3 320"), (True, "Lossless"), (False, "Lossless"),
                  (False, "Lossless")],
     )
-    assert await migrations.run(core) == ["everything_automatic"]
+    assert "everything_automatic" in await migrations.run(core)
     assert (await core.settings.get()).hunter.profile_id == ids["MP3 320"]
     async with core.db.session() as s:
         assert (await core.catalog.quality_profile(s)).name == "MP3 320"

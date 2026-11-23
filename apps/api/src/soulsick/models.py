@@ -83,7 +83,10 @@ class Artist(Base):
     disambiguation: Mapped[str] = mapped_column(String, default="")
     country: Mapped[str | None] = mapped_column(String, nullable=True)
     type: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Followed: its upcoming releases are wanted. Not followed: only the albums you ask for
     monitored: Mapped[bool] = mapped_column(Boolean, default=True)
+    # Since when it is followed: a release that came out before is not wanted on its own
+    followed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     # No longer read: every album is downloaded automatically, with the profile chosen in the
     # settings. Kept because the column is NOT NULL in existing databases
     mode: Mapped[str] = mapped_column(String, default=ArtistMode.AUTO)

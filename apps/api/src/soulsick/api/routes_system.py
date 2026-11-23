@@ -162,12 +162,7 @@ async def run_hunter(core: Core = Depends(get_core)) -> dict:
             await s.execute(
                 select(func.count())
                 .select_from(ReleaseGroup)
-                .join(Artist, Artist.id == ReleaseGroup.artist_id)
-                .where(
-                    ReleaseGroup.status == AlbumStatus.WANTED,
-                    ReleaseGroup.monitored.is_(True),
-                    Artist.monitored.is_(True),
-                )
+                .where(ReleaseGroup.status == AlbumStatus.WANTED, ReleaseGroup.monitored.is_(True))
             )
         ).scalar_one()
     asyncio.create_task(core.hunter.run_wanted(limit, force=True))

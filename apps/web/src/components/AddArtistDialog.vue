@@ -1,27 +1,21 @@
 <script setup lang="ts">
 import type { MBArtist } from '@/lib/types'
-import { ArrowLeftIcon, CheckIcon, SearchIcon } from '@lucide/vue'
+import { CheckIcon, SearchIcon } from '@lucide/vue'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/vue-query'
 import { refDebounced } from '@vueuse/core'
 import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 import { toast } from 'vue-sonner'
-import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
-import { FieldDescription, FieldGroup, FieldLegend, FieldSet } from '@/components/ui/field'
 import { InputGroup, InputGroupAddon, InputGroupInput } from '@/components/ui/input-group'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Spinner } from '@/components/ui/spinner'
-import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { api } from '@/lib/api'
-import { RELEASE_TYPES, releaseTypeLabel, SECONDARY_TYPES } from '@/lib/status'
-import { cn } from '@/lib/utils'
 
 const open = defineModel<boolean>('open', { default: false })
-// Artists already chosen (Discover, similar artists): straight to "how to follow them".
-// Several at once: the same settings for each, added in the background.
+// Artists already chosen (Discover): only to confirm. Several at once are added in the background.
 const props = defineProps<{ presets?: { mbid: string, name: string }[] }>()
 const emit = defineEmits<{ done: [] }>()
 const { t } = useI18n()
@@ -30,11 +24,7 @@ const qc = useQueryClient()
 
 const q = ref('')
 const debounced = refDebounced(q, 350)
-const picked = ref<MBArtist | null>(null)
-
-const primary = ref<string[]>(['album', 'ep'])
-const secondary = ref<string[]>([])
-const monitor = ref<'all' | 'future' | 'none'>('none')
+const many = ref<{ mbid: string, name: string }[]>([])
 
 const { data: results, isFetching } = useQuery({
   queryKey: ['mb-artists', debounced],
@@ -43,43 +33,28 @@ const { data: results, isFetching } = useQuery({
   staleTime: 60_000,
 })
 
-const many = ref<{ mbid: string, name: string }[]>([])
-
 watch(open, (o) => {
-  const presets = props.presets ?? []
-  if (o && presets.length > 1)
-    many.value = [...presets]
-  else if (o && presets.length === 1) {
-    const preset = presets[0]!
-    picked.value = {
-      mbid: preset.mbid,
-      name: preset.name,
-      sort_name: preset.name,
-      disambiguation: '',
-      country: null,
-      type: null,
-      score: 100,
-      begin: null,
-      tags: [],
-      in_library: false,
-    }
-  }
+  if (o && props.presets?.length)
+    many.value = [...props.presets]
   if (!o) {
     setTimeout(() => {
       q.value = ''
-      picked.value = null
       many.value = []
     }, 200)
   }
 })
 
-const add = useMutation({
-  mutationFn: () => api.post<{ id: number, name: string }>('/artists', {
-    mbid: picked.value!.mbid,
-    primary_types: primary.value,
-    secondary_types: secondary.value,
-    monitor: monitor.value,
-  }),
+/** Following reads its discography on MusicBrainz: a few seconds, then its page opens */
+const following = ref<string | null>(null)
+const followOne = useMutation({
+  mutationFn: async (r: MBArtist) => {
+    following.value = r.mbid
+    if (r.artist_id) {
+      await api.post(`/artists/${r.artist_id}/follow`)
+      return { id: r.artist_id, name: r.name }
+    }
+    return api.post<{ id: number, name: string }>('/artists', { mbid: r.mbid })
+  },
   onSuccess: (a) => {
     toast.success(t('addArtist.added', { name: a.name }), { description: t('addArtist.addedHint') })
     qc.invalidateQueries({ queryKey: ['artists'] })
@@ -87,15 +62,19 @@ const add = useMutation({
     router.push({ name: 'artist', params: { id: a.id } })
   },
   onError: e => toast.error(t('addArtist.failed'), { description: e.message }),
+  onSettled: () => (following.value = null),
 })
+function pick(r: MBArtist) {
+  if (r.followed && r.artist_id) {
+    open.value = false
+    router.push({ name: 'artist', params: { id: r.artist_id } })
+    return
+  }
+  followOne.mutate(r)
+}
 
-const addMany = useMutation({
-  mutationFn: () => api.post<{ queued: number }>('/artists/bulk', {
-    mbids: many.value.map(a => a.mbid),
-    primary_types: primary.value,
-    secondary_types: secondary.value,
-    monitor: monitor.value,
-  }),
+const followMany = useMutation({
+  mutationFn: () => api.post<{ queued: number }>('/artists/bulk', { mbids: many.value.map(a => a.mbid) }),
   onSuccess: (r) => {
     toast.success(t('addArtist.addingMany', { n: r.queued }, r.queued), { description: t('addArtist.addingManyHint') })
     open.value = false
@@ -103,14 +82,6 @@ const addMany = useMutation({
   },
   onError: e => toast.error(t('addArtist.failed'), { description: e.message }),
 })
-
-const pending = computed(() => add.isPending.value || addMany.isPending.value)
-function submit() {
-  if (many.value.length)
-    addMany.mutate()
-  else
-    add.mutate()
-}
 </script>
 
 <template>
@@ -118,22 +89,31 @@ function submit() {
     <DialogContent class="gap-0 overflow-hidden p-0 sm:max-w-[560px]">
       <DialogHeader class="border-b px-6 pt-5 pb-4">
         <DialogTitle class="text-[16px]">
-          {{ many.length
-            ? t('addArtist.followMany', { n: many.length }, many.length)
-            : picked ? t('addArtist.follow', { name: picked.name }) : t('common.followArtist') }}
+          {{ many.length ? t('addArtist.followMany', { n: many.length }, many.length) : t('common.followArtist') }}
         </DialogTitle>
-        <DialogDescription class="text-[12.5px]">
-          {{ many.length
-            ? t('addArtist.howManyHint')
-            : picked ? t('addArtist.howHint') : t('addArtist.searchHint') }}
+        <DialogDescription class="text-[13px]">
+          {{ many.length ? t('addArtist.howManyHint') : t('addArtist.searchHint') }}
         </DialogDescription>
-        <p v-if="many.length" class="line-clamp-3 pt-1 text-[12px] text-foreground/80">
-          {{ many.map(a => a.name).join(', ') }}
-        </p>
       </DialogHeader>
 
-      <!-- Step 1: pick the artist -->
-      <div v-if="!picked && !many.length" class="flex flex-col gap-3 p-4">
+      <!-- Artists chosen elsewhere: confirm -->
+      <template v-if="many.length">
+        <p class="line-clamp-4 px-6 py-5 text-[13px] text-foreground">
+          {{ many.map(a => a.name).join(', ') }}
+        </p>
+        <DialogFooter class="border-t bg-well/50 px-6 py-3 sm:justify-between">
+          <Button type="button" variant="ghost" size="sm" @click="open = false">
+            {{ t('common.cancel') }}
+          </Button>
+          <Button size="sm" :disabled="followMany.isPending.value" @click="followMany.mutate()">
+            <Spinner v-if="followMany.isPending.value" data-icon="inline-start" />
+            {{ t('addArtist.followMany', { n: many.length }, many.length) }}
+          </Button>
+        </DialogFooter>
+      </template>
+
+      <!-- Search, then a click follows -->
+      <div v-else class="flex flex-col gap-3 p-4">
         <InputGroup>
           <InputGroupAddon>
             <SearchIcon />
@@ -145,101 +125,42 @@ function submit() {
         </InputGroup>
         <div class="scrollbar-thin -mx-1 flex max-h-[380px] min-h-[120px] flex-col overflow-y-auto px-1">
           <template v-if="isFetching && !results">
-            <Skeleton v-for="i in 4" :key="i" class="mb-1.5 h-12 w-full" />
+            <Skeleton v-for="i in 4" :key="i" class="mb-2 h-12 w-full" />
           </template>
           <button
             v-for="r in results ?? []"
             :key="r.mbid"
             type="button"
-            :disabled="r.in_library"
-            class="flex items-center gap-3 rounded-md px-3 py-2.5 text-left transition-colors hover:bg-accent disabled:cursor-default disabled:opacity-60 disabled:hover:bg-transparent"
-            @click="picked = r"
+            :disabled="followOne.isPending.value"
+            class="flex items-center gap-3 rounded-md px-3 py-2 text-left transition-colors hover:bg-accent disabled:cursor-default"
+            @click="pick(r)"
           >
-            <div class="flex min-w-0 flex-1 flex-col gap-0.5">
+            <div class="flex min-w-0 flex-1 flex-col gap-1">
               <div class="flex items-baseline gap-2">
-                <span class="truncate text-[13.5px] font-medium">{{ r.name }}</span>
+                <span class="truncate text-[14px] font-medium">{{ r.name }}</span>
                 <span v-if="r.disambiguation" class="truncate text-[12px] text-muted-foreground">{{ r.disambiguation }}</span>
               </div>
-              <div class="flex items-center gap-2 text-[11.5px] text-faint">
+              <div class="flex items-center gap-2 text-[12px] text-faint">
                 <span v-if="r.type">{{ r.type }}</span>
                 <span v-if="r.country" class="font-mono">{{ r.country }}</span>
                 <span v-if="r.begin" class="font-mono tnum">{{ r.begin.slice(0, 4) }}</span>
                 <span v-if="r.tags.length" class="truncate">· {{ r.tags.join(', ') }}</span>
               </div>
             </div>
-            <Badge v-if="r.in_library" variant="success">
-              <CheckIcon />{{ t('addArtist.followed') }}
-            </Badge>
-            <span v-else class="font-mono text-[10.5px] text-faint tnum">{{ r.score }}%</span>
+            <Spinner v-if="following === r.mbid" class="size-4 text-muted-foreground" />
+            <span v-else-if="r.followed" class="inline-flex items-center gap-1 text-[12px] text-success">
+              <CheckIcon class="size-3" />{{ t('addArtist.followed') }}
+            </span>
+            <span v-else class="text-[12px] text-muted-foreground">{{ t('artist.follow') }}</span>
           </button>
-          <p v-if="results && !results.length" class="py-8 text-center text-[12.5px] text-faint">
+          <p v-if="results && !results.length" class="py-8 text-center text-[13px] text-faint">
             {{ t('addArtist.noResult') }}
           </p>
-          <p v-if="!results && !isFetching" class="py-8 text-center text-[12.5px] text-faint">
+          <p v-if="!results && !isFetching" class="py-8 text-center text-[13px] text-faint">
             {{ t('addArtist.typeMore') }}
           </p>
         </div>
       </div>
-
-      <!-- Step 2: how to follow -->
-      <form v-else class="flex flex-col gap-6 px-6 py-5" @submit.prevent="submit()">
-        <FieldGroup>
-          <FieldSet>
-            <FieldLegend variant="label">
-              {{ t('artist.releaseTypes') }}
-            </FieldLegend>
-            <ToggleGroup v-model="primary" type="multiple" variant="outline" size="sm" class="flex-wrap justify-start">
-              <ToggleGroupItem v-for="key in RELEASE_TYPES" :key="key" :value="key">
-                {{ releaseTypeLabel(key) }}
-              </ToggleGroupItem>
-            </ToggleGroup>
-            <FieldDescription>{{ t('addArtist.secondaryHint') }}</FieldDescription>
-            <ToggleGroup v-model="secondary" type="multiple" variant="outline" size="sm" class="flex-wrap justify-start">
-              <ToggleGroupItem v-for="key in SECONDARY_TYPES" :key="key" :value="key">
-                {{ releaseTypeLabel(key) }}
-              </ToggleGroupItem>
-            </ToggleGroup>
-          </FieldSet>
-
-          <FieldSet>
-            <FieldLegend variant="label">
-              {{ t('addArtist.existing') }}
-            </FieldLegend>
-            <ToggleGroup v-model="monitor" type="single" variant="outline" size="sm" class="flex-wrap justify-start">
-              <ToggleGroupItem value="none">
-                {{ t('addArtist.monitor.none') }}
-              </ToggleGroupItem>
-              <ToggleGroupItem value="future">
-                {{ t('addArtist.monitor.future') }}
-              </ToggleGroupItem>
-              <ToggleGroupItem value="all">
-                {{ t('addArtist.monitor.all') }}
-              </ToggleGroupItem>
-            </ToggleGroup>
-            <FieldDescription>
-              {{ monitor === 'all'
-                ? t('addArtist.monitorAllHint')
-                : t('addArtist.monitorHint') }}
-            </FieldDescription>
-          </FieldSet>
-        </FieldGroup>
-
-        <DialogFooter :class="cn('-mx-6 -mb-5 border-t bg-well/50 px-6 py-3.5 sm:justify-between')">
-          <Button v-if="many.length" type="button" variant="ghost" size="sm" @click="open = false">
-            {{ t('common.cancel') }}
-          </Button>
-          <Button v-else type="button" variant="ghost" size="sm" @click="picked = null">
-            <ArrowLeftIcon data-icon="inline-start" />
-            {{ t('addArtist.other') }}
-          </Button>
-          <Button type="submit" size="sm" :disabled="pending || !primary.length">
-            <Spinner v-if="pending" data-icon="inline-start" />
-            {{ many.length
-              ? t('addArtist.followMany', { n: many.length }, many.length)
-              : t('addArtist.follow', { name: picked!.name }) }}
-          </Button>
-        </DialogFooter>
-      </form>
     </DialogContent>
   </Dialog>
 </template>

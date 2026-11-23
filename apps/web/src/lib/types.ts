@@ -323,7 +323,9 @@ export interface MBArtist {
   score: number
   begin: string | null
   tags: string[]
-  in_library: boolean
+  /** Already in the catalog (followed, or known through albums on disk) */
+  artist_id: number | null
+  followed: boolean
 }
 
 export interface SearchFolder {
@@ -659,6 +661,7 @@ export interface SimilarArtist {
   name: string
   comment: string
   type: string | null
-  /** Set when it is already followed */
+  /** Set when it is already in the catalog (its page exists) */
   followed_id: number | null
+  followed: boolean
 }
