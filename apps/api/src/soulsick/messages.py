@@ -132,6 +132,7 @@ EN: dict[str, str] = {
     "artist.removed_shared": "Artist removed: {name} (files in the library are kept; {kept} shared release stays with the other artist) | Artist removed: {name} (files in the library are kept; {kept} shared releases stay with the other artist)",
     "artist.updated": "{name}: {changes}",
     "artist.change.mode": "mode {value}",
+    "discover.want_failed": "Album asked from Discover not added: {error}",
     "artist.followed": "Following {name}: {n} upcoming release wanted | Following {name}: {n} upcoming releases wanted",
     "artist.unfollowed": "No longer following {name}: what you asked for stays wanted",
     "artist.change.monitored_on": "following resumed",

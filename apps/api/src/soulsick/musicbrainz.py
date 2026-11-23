@@ -97,6 +97,39 @@ class MusicBrainz:
             "type": a.get("type"),
         }
 
+    async def artist_profile(self, mbid: str) -> dict:
+        """What an artist to discover is: where and since when, its genres (by votes), its
+        best-known albums (studio albums first, the most rated first) and its Deezer page.
+        Two requests: kept a day."""
+        a = await self._get(f"artist/{mbid}", {"inc": "genres+url-rels"}, ttl=86400)
+        g = await self._get(
+            "release-group", {"artist": mbid, "type": "album", "inc": "ratings", "limit": 100}, ttl=86400,
+        )
+
+        def rank(r: dict) -> tuple:
+            rating = r.get("rating") or {}
+            votes, value = rating.get("votes-count") or 0, rating.get("value") or 0
+            return bool(r.get("secondary-types")), -votes, -value, r.get("first-release-date") or "9999"
+
+        groups = sorted((r for r in g.get("release-groups", []) if r.get("id")), key=rank)
+        begin = ((a.get("life-span") or {}).get("begin") or "")[:4]
+        links = [((r.get("url") or {}).get("resource") or "") for r in a.get("relations") or []]
+        genres = sorted(a.get("genres") or [], key=lambda x: -(x.get("count") or 0))
+        return {
+            "area": (a.get("area") or {}).get("name"),
+            "begin_year": int(begin) if begin.isdigit() else None,
+            "type": a.get("type"),
+            "genres": [x["name"] for x in genres][:3],
+            "releases": [
+                {
+                    "mbid": r["id"], "title": r.get("title", ""),
+                    "year": (r.get("first-release-date") or "")[:4] or None, "type": r.get("primary-type"),
+                }
+                for r in groups[:3]
+            ],
+            "deezer_url": next((u for u in links if "deezer.com" in u), None),
+        }
+
     async def artist_release_groups(self, artist_mbid: str) -> list[dict]:
         """Release groups de l'artiste, sans ceux qui n'ont que des bootlegs ou des promos.
 

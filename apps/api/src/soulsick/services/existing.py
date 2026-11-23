@@ -28,7 +28,7 @@ from .. import lyrics
 from ..audiotags import read_meta
 from ..matching import FileRef, TrackRef, match_files
 from ..messages import M, UserError
-from ..models import Artist, ArtistReleaseGroup, LibraryFile, Release, ReleaseGroup, Transfer
+from ..models import Artist, LibraryFile, Release, ReleaseGroup, Transfer
 from ..quality import is_audio, worst_format
 from .importer import destination, place_track
 
@@ -326,8 +326,8 @@ class ExistingImportService:
             raise UserError("error.unknown_match")
 
         # Artiste et sortie dans le catalogue (sans rien suivre ni télécharger)
-        artist_row = await self._ensure_artist(prop["artist_mbid"], follow)
-        rg_row = await self._ensure_release_group(rg_mbid, artist_row.id)
+        artist_row = await self.core.catalog.ensure_artist(prop["artist_mbid"], follow)
+        rg_row = await self.core.catalog.ensure_album(rg_mbid, artist_row.id)
         await self.core.catalog.ensure_releases(rg_row.id)
         releases = await self.core.catalog.releases_with_tracks(rg_row.id)
         rel = next((r for r in releases if r.mbid == rel_mbid), None)
@@ -415,47 +415,6 @@ class ExistingImportService:
         )
         await self.core.navidrome.trigger_scan()
         return {"moved": len(moved), "skipped": skipped, "album_dir": album_dir, "release_group_id": rg_row.id}
-
-    async def _ensure_artist(self, mbid: str, follow: bool) -> Artist:
-        """Artiste présent dans le catalogue. Créé ici : suivi seulement si demandé (seules ses
-        sorties à venir sont alors voulues). Un artiste déjà là n'est jamais dé-suivi."""
-        async with self.core.db.session() as s:
-            a = (await s.execute(select(Artist).where(Artist.mbid == mbid))).scalar_one_or_none()
-        if a is None:
-            a = await self.core.catalog.add_artist(
-                mbid, primary_types=["album", "ep"], secondary_types=[], follow=follow,
-            )
-        elif follow and not a.monitored:
-            await self.core.catalog.follow(a.id)
-        async with self.core.db.session() as s:
-            row = await s.get(Artist, a.id)
-            assert row
-            return row
-
-    async def _ensure_release_group(self, mbid: str, artist_id: int) -> ReleaseGroup:
-        async with self.core.db.session() as s:
-            rg = (await s.execute(select(ReleaseGroup).where(ReleaseGroup.mbid == mbid))).scalar_one_or_none()
-            if rg is None:
-                # Sortie hors discographie officielle (bootleg, compilation…) : on la crée à la main
-                g = await self.core.mb.get_release_group(mbid)
-                rg = ReleaseGroup(
-                    mbid=mbid, artist_id=artist_id, title=g["title"], primary_type=g["primary_type"],
-                    secondary_types=g["secondary_types"], first_release_date=g["first_release_date"],
-                )
-                s.add(rg)
-                await s.flush()
-            linked = (
-                await s.execute(
-                    select(ArtistReleaseGroup).where(
-                        ArtistReleaseGroup.artist_id == artist_id, ArtistReleaseGroup.release_group_id == rg.id
-                    )
-                )
-            ).first()
-            if not linked:
-                s.add(ArtistReleaseGroup(artist_id=artist_id, release_group_id=rg.id))
-            await s.commit()
-            await s.refresh(rg)
-            return rg
 
 
 class _TrackLike:

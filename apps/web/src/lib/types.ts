@@ -665,3 +665,53 @@ export interface SimilarArtist {
   followed_id: number | null
   followed: boolean
 }
+
+/** What MusicBrainz says of an artist to discover (null fields when it doesn't know) */
+export interface DiscoverProfile {
+  area: string | null
+  begin_year: number | null
+  type: string | null
+  genres: string[]
+  /** Its best-known albums, studio albums first */
+  releases: {
+    mbid: string
+    title: string
+    year: string | null
+    type: string | null
+    /** Where it stands for you: on your disk, asked for, or nothing */
+    state?: 'imported' | 'wanted' | null
+  }[]
+  deezer_id: number | null
+  /** Its best-known track, with a 30-second extract */
+  track: { title: string, deezer_id: number } | null
+}
+
+export type DeckAngle =
+  | { kind: 'crossing', artists: { id: number, name: string }[] }
+  | { kind: 'wake', artist: { id: number, name: string } }
+  | { kind: 'further' }
+  | { kind: 'library' }
+
+export interface DeckCard {
+  mbid: string
+  name: string
+  comment: string
+  type: string | null
+  /** How close to your taste, 1 to 100 (none for an artist of your library) */
+  score: number | null
+  /** Your artists that lead to it, the strongest first */
+  because: { id: number, name: string }[]
+  /** Already in the catalog (an artist of your library) */
+  artist_id: number | null
+  /** Its albums on your disk */
+  shelved: number
+  /** Sent with the first cards; asked as you go for the others */
+  profile: DiscoverProfile | null
+}
+
+export interface DeckResponse {
+  angle: DeckAngle | null
+  cards: DeckCard[]
+  pending: number
+  followed: number
+}
