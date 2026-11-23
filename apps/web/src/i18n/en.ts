@@ -61,6 +61,10 @@ const en = {
     logout: 'Sign out',
     nextHunt: 'Next hunt {when}',
     huntPaused: 'Hunting paused',
+    collapse: 'Collapse sidebar',
+    expand: 'Expand sidebar',
+    lightMode: 'Light mode',
+    darkMode: 'Dark mode',
   },
   network: {
     starting: 'Starting',
@@ -929,6 +933,7 @@ const en = {
       unknown: '“{key}”: unknown key.',
     },
     builtin: {
+      graphite: { name: 'Graphite', description: 'Neutral grey, off-white accent; the album and artist pages take the colour of the cover.' },
       symfonium: { name: 'Symfonium', description: 'Near-black with a hint of violet, lavender accent; the accent follows the covers.' },
       ampli: { name: 'Amp', description: 'Hi-fi amp faceplate: warm black, cream, VU-meter amber.' },
       encre: { name: 'Ink', description: 'Black and white, no tint. The only colour comes from the covers.' },

@@ -60,6 +60,10 @@ const fr: Messages = {
     logout: 'Se déconnecter',
     nextHunt: 'Prochaine chasse {when}',
     huntPaused: 'Chasse en pause',
+    collapse: 'Réduire la barre latérale',
+    expand: 'Déplier la barre latérale',
+    lightMode: 'Mode clair',
+    darkMode: 'Mode sombre',
   },
   network: {
     starting: 'Initialisation',
@@ -928,6 +932,7 @@ const fr: Messages = {
       unknown: '« {key} » : clé inconnue.',
     },
     builtin: {
+      graphite: { name: 'Graphite', description: 'Gris neutre, accent blanc cassé ; les pages album et artiste prennent la couleur de la pochette.' },
       symfonium: { name: 'Symfonium', description: 'Quasi-noir à peine violacé, accent lavande ; l’accent prend la couleur des pochettes.' },
       ampli: { name: 'Ampli', description: 'Façade d’ampli hi-fi : noir chaud, crème, ambre de VU-mètre.' },
       encre: { name: 'Encre', description: 'Noir et blanc, sans teinte. La seule couleur vient des pochettes.' },

@@ -17,7 +17,7 @@ const state = computed(() => {
   if (!s)
     return { label: t('network.starting'), led: 'bg-faint', text: 'text-faint' }
   if (s.connected)
-    return { label: t('network.online'), led: 'bg-success shadow-[0_0_6px_var(--success)]', text: 'text-success' }
+    return { label: t('network.online'), led: 'bg-success', text: 'text-success' }
   if (s.connecting)
     return { label: t('network.connecting'), led: 'bg-primary animate-pulse', text: 'text-primary' }
   if (!s.configured)
@@ -41,7 +41,7 @@ function line(key: 'down' | 'up') {
 </script>
 
 <template>
-  <div class="flex flex-col gap-2.5 rounded-md border bg-well/60 p-3">
+  <div class="flex flex-col gap-2.5 rounded-md border bg-background p-3">
     <div class="flex items-center justify-between gap-2">
       <div class="flex min-w-0 items-center gap-2">
         <span :class="cn('size-[7px] shrink-0 rounded-full', state.led)" />

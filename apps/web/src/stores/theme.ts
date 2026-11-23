@@ -5,6 +5,21 @@ import { api } from '@/lib/api'
 import { BUILTIN_THEMES, themeCss } from '@/lib/themes'
 
 const KEY = 'soulsick-theme-def'
+// Graphite replaced Symfonium (violet) as the default: a browser still on Symfonium, saved
+// when it was the default, moves to Graphite once. Choosing Symfonium again sticks.
+const MOVED = 'soulsick-theme-graphite'
+
+function stored(): ThemeDef | null {
+  const raw = localStorage.getItem(KEY)
+  if (!localStorage.getItem(MOVED)) {
+    localStorage.setItem(MOVED, '1')
+    if (raw && JSON.parse(raw).id === 'symfonium') {
+      localStorage.removeItem(KEY)
+      return null
+    }
+  }
+  return raw ? JSON.parse(raw) : null
+}
 
 function inject(def: ThemeDef) {
   let el = document.getElementById('soulsick-theme') as HTMLStyleElement | null
@@ -19,8 +34,7 @@ function inject(def: ThemeDef) {
 /** Thème appliqué au démarrage, avant même la connexion (copie gardée dans ce navigateur). */
 export function bootTheme() {
   try {
-    const raw = localStorage.getItem(KEY)
-    inject(raw ? JSON.parse(raw) : BUILTIN_THEMES[0]!)
+    inject(stored() ?? BUILTIN_THEMES[0]!)
   }
   catch {
     inject(BUILTIN_THEMES[0]!)
@@ -39,8 +53,7 @@ export const useThemes = defineStore('themes', () => {
 
   function readCurrent(): ThemeDef {
     try {
-      const raw = localStorage.getItem(KEY)
-      return raw ? JSON.parse(raw) : BUILTIN_THEMES[0]!
+      return stored() ?? BUILTIN_THEMES[0]!
     }
     catch {
       return BUILTIN_THEMES[0]!

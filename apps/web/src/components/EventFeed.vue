@@ -27,7 +27,7 @@ const groups = computed(() => {
 <template>
   <div class="flex flex-col">
     <section v-for="g in groups" :key="g.day" class="flex flex-col">
-      <h3 :class="cn('legend px-1 pt-3 pb-1.5 first-letter:uppercase', !compact && 'sticky top-0 z-[1] -mx-1 bg-background/95 backdrop-blur')">
+      <h3 :class="cn('legend px-1 pt-3 pb-1.5 first-letter:uppercase', !compact && 'sticky top-14 z-[1] lg:top-0 -mx-1 bg-background/95 backdrop-blur')">
         {{ g.day }}
       </h3>
       <div class="flex flex-col divide-y divide-border/60">

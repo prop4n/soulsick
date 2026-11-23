@@ -185,6 +185,20 @@ export function validateTheme(input: unknown): { theme?: ThemeDef, errors: strin
 /** Built-in themes. */
 export const BUILTIN_THEMES: ThemeDef[] = [
   {
+    id: 'graphite',
+    name: 'Graphite',
+    description: 'Neutral grey, off-white accent; the album and artist pages take the colour of the cover.',
+    radius: '0.75rem',
+    coverAccent: true,
+    base: { hue: 0, chroma: 0 },
+    accent: {
+      dark: 'oklch(0.93 0 0)',
+      darkForeground: 'oklch(0.17 0 0)',
+      light: 'oklch(0.24 0 0)',
+      lightForeground: 'oklch(0.98 0 0)',
+    },
+  },
+  {
     id: 'symfonium',
     name: 'Symfonium',
     description: 'Near-black with a hint of violet, lavender accent; the accent follows the covers.',

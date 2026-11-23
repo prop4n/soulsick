@@ -41,7 +41,13 @@ export const router = createRouter({
     },
     { path: '/connexion', redirect: to => ({ name: 'login', query: to.query }) },
   ],
-  scrollBehavior: (to, from) => (to.name === from.name ? undefined : { top: 0 }),
+  scrollBehavior: (to, from) => {
+    if (to.name === from.name)
+      return undefined
+    // Desktop: the page scrolls inside the inset panel (AppShell), not the window
+    document.getElementById('scroller')?.scrollTo({ top: 0 })
+    return { top: 0 }
+  },
 })
 
 router.beforeEach(async (to) => {

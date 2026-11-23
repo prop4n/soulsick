@@ -9,24 +9,30 @@ import {
   HardDriveIcon,
   HouseIcon,
   LogOutIcon,
-  MessagesSquareIcon,
   MenuIcon,
+  MessagesSquareIcon,
+  MoonIcon,
+  PanelLeftIcon,
   SearchIcon,
   Settings2Icon,
   Share2Icon,
+  SunIcon,
   UsersRoundIcon,
 } from '@lucide/vue'
 import { useQueryClient } from '@tanstack/vue-query'
+import { useLocalStorage, useMutationObserver } from '@vueuse/core'
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
 import LibraryGuardBanner from '@/components/LibraryGuardBanner.vue'
 import NetworkModule from '@/components/NetworkModule.vue'
+import { Breadcrumb, BreadcrumbItem, BreadcrumbLink, BreadcrumbList, BreadcrumbPage, BreadcrumbSeparator } from '@/components/ui/breadcrumb'
 import { Button } from '@/components/ui/button'
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '@/components/ui/sheet'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { useStatus } from '@/composables/queries'
 import { ago } from '@/lib/format'
+import { setTheme } from '@/lib/theme'
 import { cn } from '@/lib/utils'
 import { pageTitle } from '@/router'
 import { useLive } from '@/stores/live'
@@ -45,6 +51,8 @@ const qc = useQueryClient()
 const { data: status } = useStatus()
 
 const navOpen = ref(false)
+// Desktop: full sidebar or icon rail, remembered by this browser
+const rail = useLocalStorage('soulsick-sidebar-rail', false)
 
 onMounted(() => {
   live.connect(qc)
@@ -52,6 +60,16 @@ onMounted(() => {
 })
 onUnmounted(() => live.disconnect())
 watch(locale, () => (document.title = pageTitle()))
+
+// Light or dark as shown right now (Settings can change it too)
+const isDark = ref(document.documentElement.classList.contains('dark'))
+useMutationObserver(document.documentElement, () => {
+  isDark.value = document.documentElement.classList.contains('dark')
+}, { attributes: true, attributeFilter: ['class'] })
+const themeLabel = computed(() => (isDark.value ? t('shell.lightMode') : t('shell.darkMode')))
+function toggleTheme() {
+  setTheme(isDark.value ? 'light' : 'dark')
+}
 
 const attention = computed(() => {
   const a = status.value?.albums ?? {}
@@ -82,7 +100,7 @@ const groups = computed<{ label: string | null, items: NavItem[] }[]>(() => [
         count: (status.value?.active_transfers.download ?? 0) + (status.value?.active_transfers.upload ?? 0),
         tone: status.value?.stuck_transfers ? 'warning' : 'signal',
       },
-      { name: 'browse', label: t('nav.browse'), icon: FolderTreeIcon },
+      { name: 'browse', label: t('nav.browse'), icon: FolderTreeIcon, also: ['peer'] },
       { name: 'chat', label: t('nav.chat'), icon: MessagesSquareIcon, count: status.value?.chat_unread, tone: 'signal' },
       { name: 'shares', label: t('nav.shares'), icon: Share2Icon },
     ],
@@ -101,6 +119,14 @@ function isActive(item: NavItem) {
   return r === item.name || !!item.also?.includes(r)
 }
 
+// Breadcrumb: the section a detail page belongs to, then the page itself
+const crumbs = computed(() => {
+  const r = route.name as string
+  const parent = groups.value.flatMap(g => g.items).find(i => i.also?.includes(r))
+  const key = route.meta.title as string | undefined
+  return { parent, page: key ? t(key) : '' }
+})
+
 const hunterLine = computed(() => {
   const h = live.hunter ?? status.value?.hunter
   if (!h)
@@ -118,130 +144,261 @@ async function logout() {
 </script>
 
 <template>
-  <div class="flex min-h-svh bg-background">
+  <div class="flex min-h-svh bg-background lg:h-svh lg:bg-well">
     <a
       href="#content"
       class="sr-only z-50 rounded-lg bg-primary px-3 py-2 text-[13px] text-primary-foreground focus:not-sr-only focus:fixed focus:top-3 focus:left-3"
     >{{ t('shell.skip') }}</a>
-    <!-- Sidebar: same background as the content, separated by a hairline -->
-    <aside class="sticky top-0 hidden h-svh w-[240px] shrink-0 flex-col border-r lg:flex">
-      <div class="flex h-14 items-center gap-2 px-5">
-        <RouterLink :to="{ name: 'home' }" class="group flex items-baseline gap-1.5">
-          <span class="font-serif text-[23px] leading-none italic tracking-tight text-foreground">soulsick</span>
-          <span class="size-1.5 rounded-full bg-primary transition-shadow group-hover:shadow-[0_0_8px_var(--primary)]" />
+
+    <!-- Sidebar: sits on the frame, the content is the inset panel next to it -->
+    <aside :class="cn('sticky top-0 hidden h-svh shrink-0 flex-col lg:flex', rail ? 'w-14' : 'w-[248px]')">
+      <div :class="cn('flex h-16 items-center', rail ? 'justify-center' : 'px-5')">
+        <RouterLink :to="{ name: 'home' }" class="flex items-baseline gap-1.5 rounded-md" :aria-label="rail ? 'soulsick' : undefined">
+          <span class="font-serif text-[24px] leading-none italic text-foreground">{{ rail ? 's' : 'soulsick' }}</span>
+          <span class="size-1.5 rounded-full bg-primary" />
         </RouterLink>
       </div>
-      <nav class="scrollbar-thin flex flex-1 flex-col gap-5 overflow-y-auto px-3 pt-2 pb-4">
-        <div v-for="(g, gi) in groups" :key="gi" class="flex flex-col gap-0.5">
-          <p v-if="g.label" class="legend px-2 pb-1.5">
+
+      <nav :class="cn('scrollbar-thin flex flex-1 flex-col gap-6 overflow-y-auto pb-4', rail ? 'items-center px-3' : 'px-3')">
+        <div v-for="(g, gi) in groups" :key="gi" :class="cn('flex flex-col gap-1', rail && 'items-center')">
+          <p v-if="g.label && !rail" class="px-2 pb-1 text-[12px] font-medium text-faint">
             {{ g.label }}
           </p>
-          <RouterLink
-            v-for="item in g.items"
-            :key="item.name"
-            :to="{ name: item.name }"
-            :class="cn(
-              'group relative flex h-8 items-center gap-2.5 rounded-md px-2 text-[13px] transition-colors',
-              isActive(item) ? 'bg-accent text-foreground' : 'text-muted-foreground hover:bg-accent/60 hover:text-foreground',
-            )"
-          >
-            <span
-              v-if="isActive(item)"
-              class="absolute top-1.5 bottom-1.5 left-0 w-[2px] rounded-full bg-primary"
-            />
-            <component :is="item.icon" class="size-[15px] shrink-0" :stroke-width="1.75" />
-            <span class="flex-1 truncate">{{ item.label }}</span>
-            <span
-              v-if="item.count"
+          <template v-for="item in g.items" :key="item.name">
+            <Tooltip v-if="rail">
+              <TooltipTrigger as-child>
+                <RouterLink
+                  :to="{ name: item.name }"
+                  :aria-label="item.label"
+                  :class="cn(
+                    'relative flex size-8 items-center justify-center rounded-md transition-colors',
+                    isActive(item) ? 'bg-primary/12 text-primary' : 'text-muted-foreground hover:bg-accent hover:text-foreground',
+                  )"
+                >
+                  <component :is="item.icon" class="size-4" :stroke-width="1.5" />
+                  <span
+                    v-if="item.count"
+                    :class="cn('absolute top-1 right-1 size-1.5 rounded-full', item.tone === 'warning' ? 'bg-warning' : 'bg-primary')"
+                  />
+                </RouterLink>
+              </TooltipTrigger>
+              <TooltipContent side="right">
+                {{ item.label }}<template v-if="item.count">
+                  · {{ item.count }}
+                </template>
+              </TooltipContent>
+            </Tooltip>
+            <RouterLink
+              v-else
+              :to="{ name: item.name }"
               :class="cn(
-                'min-w-5 rounded-[4px] px-1 text-center font-mono text-[10.5px] leading-[18px] tnum',
-                item.tone === 'warning' ? 'bg-warning/15 text-warning' : 'bg-primary/12 text-primary',
+                'flex h-8 items-center gap-2 rounded-md px-2 text-[13px] transition-colors',
+                isActive(item) ? 'bg-primary/12 text-primary' : 'text-muted-foreground hover:bg-accent hover:text-foreground',
               )"
-            >{{ item.count }}</span>
-          </RouterLink>
+            >
+              <component :is="item.icon" class="size-4 shrink-0" :stroke-width="1.5" />
+              <span class="flex-1 truncate">{{ item.label }}</span>
+              <span
+                v-if="item.count"
+                :class="cn(
+                  'min-w-5 rounded-[4px] px-1 text-center font-mono text-[11px] leading-[18px] tnum',
+                  item.tone === 'warning' ? 'bg-warning/15 text-warning' : 'bg-primary/12 text-primary',
+                )"
+              >{{ item.count }}</span>
+            </RouterLink>
+          </template>
         </div>
       </nav>
-      <div class="flex flex-col gap-3 border-t p-3">
-        <div v-if="hunterLine" class="flex items-center gap-2 px-1 text-[11.5px]">
+
+      <!-- Footer, rail: one icon per line, the text in a tooltip -->
+      <div v-if="rail" class="flex flex-col items-center gap-1 p-3">
+        <Tooltip v-if="hunterLine">
+          <TooltipTrigger as-child>
+            <span class="flex size-8 items-center justify-center" tabindex="0" :aria-label="hunterLine.text">
+              <span :class="cn('size-1.5 rounded-full', hunterLine.active ? 'animate-pulse bg-primary' : 'bg-faint')" />
+            </span>
+          </TooltipTrigger>
+          <TooltipContent side="right">
+            {{ hunterLine.text }}
+          </TooltipContent>
+        </Tooltip>
+        <Tooltip v-if="status && status.storage !== 'ok'">
+          <TooltipTrigger as-child>
+            <RouterLink
+              :to="{ name: 'settings', query: { tab: 'library' } }"
+              :aria-label="t(`storage.sidebar.${status.storage}`)"
+              :class="cn('flex size-8 items-center justify-center rounded-md',
+                         status.storage === 'critical' ? 'text-destructive' : 'text-warning')"
+            >
+              <HardDriveIcon class="size-4" :stroke-width="1.5" />
+            </RouterLink>
+          </TooltipTrigger>
+          <TooltipContent side="right">
+            {{ t(`storage.sidebar.${status.storage}`) }}
+          </TooltipContent>
+        </Tooltip>
+        <Tooltip>
+          <TooltipTrigger as-child>
+            <Button variant="ghost" size="icon-sm" class="text-muted-foreground" :aria-label="themeLabel" @click="toggleTheme">
+              <SunIcon v-if="isDark" class="size-4" :stroke-width="1.5" />
+              <MoonIcon v-else class="size-4" :stroke-width="1.5" />
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent side="right">
+            {{ themeLabel }}
+          </TooltipContent>
+        </Tooltip>
+        <Tooltip>
+          <TooltipTrigger as-child>
+            <Button variant="ghost" size="icon-sm" class="text-muted-foreground" :aria-label="t('shell.logout')" @click="logout">
+              <LogOutIcon class="size-4" :stroke-width="1.5" />
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent side="right">
+            {{ t('shell.logout') }} · {{ session.state?.username }}
+          </TooltipContent>
+        </Tooltip>
+      </div>
+
+      <!-- Footer, full -->
+      <div v-else class="flex flex-col gap-3 p-3">
+        <div v-if="hunterLine" class="flex items-center gap-2 px-2 text-[12px]">
           <span :class="cn('size-1.5 shrink-0 rounded-full', hunterLine.active ? 'animate-pulse bg-primary' : 'bg-faint')" />
           <span :class="cn('truncate', hunterLine.active ? 'text-primary' : 'text-faint')">{{ hunterLine.text }}</span>
         </div>
         <RouterLink
           v-if="status && status.storage !== 'ok'"
           :to="{ name: 'settings', query: { tab: 'library' } }"
-          :class="cn('flex items-center gap-2 rounded-md px-2 py-1.5 text-[11.5px]',
+          :class="cn('flex items-center gap-2 rounded-md px-2 py-1.5 text-[12px]',
                      status.storage === 'critical' ? 'bg-destructive/10 text-destructive' : 'bg-warning/10 text-warning')"
         >
-          <HardDriveIcon class="size-3.5 shrink-0" />
+          <HardDriveIcon class="size-4 shrink-0" :stroke-width="1.5" />
           {{ t(`storage.sidebar.${status.storage}`) }}
         </RouterLink>
         <NetworkModule />
-        <div class="flex items-center justify-between gap-2 px-1">
-          <span class="truncate text-[11.5px] text-faint">{{ session.state?.username }}</span>
-          <Tooltip>
-            <TooltipTrigger as-child>
-              <Button variant="ghost" size="icon-xs" class="text-faint hover:text-foreground" :aria-label="t('shell.logout')" @click="logout">
-                <LogOutIcon />
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent>{{ t('shell.logout') }}</TooltipContent>
-          </Tooltip>
+        <div class="flex flex-col gap-1">
+          <button
+            type="button"
+            class="flex h-8 items-center gap-2 rounded-md px-2 text-[13px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+            @click="toggleTheme"
+          >
+            <SunIcon v-if="isDark" class="size-4 shrink-0" :stroke-width="1.5" />
+            <MoonIcon v-else class="size-4 shrink-0" :stroke-width="1.5" />
+            {{ themeLabel }}
+          </button>
+          <button
+            type="button"
+            class="flex h-8 items-center gap-2 rounded-md px-2 text-[13px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+            @click="logout"
+          >
+            <LogOutIcon class="size-4 shrink-0" :stroke-width="1.5" />
+            <span class="flex-1 text-left">{{ t('shell.logout') }}</span>
+            <span class="truncate font-mono text-[11px] text-faint">{{ session.state?.username }}</span>
+          </button>
         </div>
       </div>
     </aside>
 
-    <!-- overflow-x-clip: cover halos bleed without creating horizontal scroll -->
-    <div class="flex min-w-0 flex-1 flex-col overflow-x-clip">
-      <header class="sticky top-0 z-20 flex h-14 items-center gap-2 border-b bg-background/85 px-4 backdrop-blur-md lg:hidden">
-        <Button variant="ghost" size="icon-sm" :aria-label="t('shell.menu')" @click="navOpen = true">
-          <MenuIcon />
-        </Button>
-        <span class="font-serif text-[20px] italic">soulsick</span>
-      </header>
+    <!-- Inset panel. Desktop: it scrolls inside itself (#scroller), so its margin and rounded
+         corners stay put. Mobile: no frame, the window scrolls -->
+    <div class="flex min-w-0 flex-1 flex-col lg:py-2 lg:pr-2">
+      <div class="flex flex-1 flex-col bg-background lg:min-h-0 lg:overflow-hidden lg:rounded-xl lg:border">
+        <header class="sticky top-0 z-20 flex h-14 shrink-0 items-center gap-2 border-b bg-background px-4 lg:static lg:h-12">
+          <Button variant="ghost" size="icon-sm" class="text-muted-foreground lg:hidden" :aria-label="t('shell.menu')" @click="navOpen = true">
+            <MenuIcon class="size-4" :stroke-width="1.5" />
+          </Button>
+          <Tooltip>
+            <TooltipTrigger as-child>
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                class="hidden text-muted-foreground lg:inline-flex"
+                :aria-label="rail ? t('shell.expand') : t('shell.collapse')"
+                :aria-pressed="!rail"
+                @click="rail = !rail"
+              >
+                <PanelLeftIcon class="size-4" :stroke-width="1.5" />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>{{ rail ? t('shell.expand') : t('shell.collapse') }}</TooltipContent>
+          </Tooltip>
+          <span class="h-4 w-px bg-border-strong" aria-hidden="true" />
+          <Breadcrumb class="min-w-0 pl-1">
+            <BreadcrumbList class="flex-nowrap gap-2 text-[13px] sm:gap-2">
+              <template v-if="crumbs.parent">
+                <BreadcrumbItem class="hidden sm:inline-flex">
+                  <BreadcrumbLink as-child>
+                    <RouterLink :to="{ name: crumbs.parent.name }">
+                      {{ crumbs.parent.label }}
+                    </RouterLink>
+                  </BreadcrumbLink>
+                </BreadcrumbItem>
+                <BreadcrumbSeparator class="hidden sm:block" />
+              </template>
+              <BreadcrumbItem class="min-w-0">
+                <BreadcrumbPage class="truncate">
+                  {{ crumbs.page }}
+                </BreadcrumbPage>
+              </BreadcrumbItem>
+            </BreadcrumbList>
+          </Breadcrumb>
+        </header>
 
-      <main id="content" tabindex="-1" class="mx-auto w-full max-w-[1320px] flex-1 px-4 py-7 outline-none sm:px-8">
-        <LibraryGuardBanner v-if="status?.library_guard && !status.library_guard.ok" :guard="status.library_guard" />
-        <RouterView v-slot="{ Component: page }">
-          <component :is="page" :key="route.path" />
-        </RouterView>
-      </main>
+        <!-- overflow-x clipped: cover halos bleed without creating horizontal scroll -->
+        <div id="scroller" class="scrollbar-thin flex flex-1 flex-col overflow-x-clip lg:min-h-0 lg:overflow-x-hidden lg:overflow-y-auto">
+          <main id="content" tabindex="-1" class="mx-auto w-full max-w-[1320px] flex-1 px-4 pt-6 pb-12 outline-none sm:px-8">
+            <LibraryGuardBanner v-if="status?.library_guard && !status.library_guard.ok" :guard="status.library_guard" />
+            <RouterView v-slot="{ Component: page }">
+              <component :is="page" :key="route.path" />
+            </RouterView>
+          </main>
+        </div>
+      </div>
     </div>
 
     <!-- Mobile navigation -->
     <Sheet v-model:open="navOpen">
-      <SheetContent side="left" class="w-[260px] gap-0 p-0">
+      <SheetContent side="left" class="w-[264px] gap-0 bg-well p-0">
         <SheetHeader class="px-5 py-4">
-          <SheetTitle class="font-serif text-[22px] font-normal italic">
+          <SheetTitle class="flex items-baseline gap-1.5 font-serif text-[24px] font-normal italic">
             soulsick
+            <span class="size-1.5 rounded-full bg-primary" />
           </SheetTitle>
           <SheetDescription class="sr-only">
             {{ t('shell.navigation') }}
           </SheetDescription>
         </SheetHeader>
-        <nav class="flex flex-col gap-4 px-3 pb-4">
-          <div v-for="(g, gi) in groups" :key="gi" class="flex flex-col gap-0.5">
-            <p v-if="g.label" class="legend px-2 pb-1">
+        <nav class="flex flex-col gap-6 overflow-y-auto px-3 pb-4">
+          <div v-for="(g, gi) in groups" :key="gi" class="flex flex-col gap-1">
+            <p v-if="g.label" class="px-2 pb-1 text-[12px] font-medium text-faint">
               {{ g.label }}
             </p>
             <RouterLink
               v-for="item in g.items"
               :key="item.name"
               :to="{ name: item.name }"
-              :class="cn('flex h-9 items-center gap-2.5 rounded-md px-2 text-[13.5px]', isActive(item) ? 'bg-accent text-foreground' : 'text-muted-foreground')"
+              :class="cn('flex h-9 items-center gap-2 rounded-md px-2 text-[14px]', isActive(item) ? 'bg-primary/12 text-primary' : 'text-muted-foreground')"
               @click="navOpen = false"
             >
-              <component :is="item.icon" class="size-4" :stroke-width="1.75" />
+              <component :is="item.icon" class="size-4" :stroke-width="1.5" />
               <span class="flex-1">{{ item.label }}</span>
               <span v-if="item.count" class="font-mono text-[11px] text-primary tnum">{{ item.count }}</span>
             </RouterLink>
           </div>
         </nav>
-        <div class="mt-auto flex flex-col gap-2 border-t p-3">
+        <div class="mt-auto flex flex-col gap-3 p-3">
           <NetworkModule />
-          <Button variant="ghost" size="sm" class="justify-start text-muted-foreground" @click="logout">
-            <LogOutIcon data-icon="inline-start" />
-            {{ t('shell.logout') }}
-          </Button>
+          <div class="flex flex-col gap-1">
+            <button type="button" class="flex h-9 items-center gap-2 rounded-md px-2 text-[14px] text-muted-foreground" @click="toggleTheme">
+              <SunIcon v-if="isDark" class="size-4" :stroke-width="1.5" />
+              <MoonIcon v-else class="size-4" :stroke-width="1.5" />
+              {{ themeLabel }}
+            </button>
+            <button type="button" class="flex h-9 items-center gap-2 rounded-md px-2 text-[14px] text-muted-foreground" @click="logout">
+              <LogOutIcon class="size-4" :stroke-width="1.5" />
+              {{ t('shell.logout') }}
+            </button>
+          </div>
         </div>
       </SheetContent>
     </Sheet>
