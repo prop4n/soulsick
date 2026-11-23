@@ -54,6 +54,12 @@
   --radius-xl: calc(var(--radius) + 6px);
 }
 
+/*
+ * Échelle de texte des écrans Artistes, Artiste, Album et Découvrir : 12 (méta, compteurs),
+ * 13 (texte secondaire), 14 (corps), 16 (titres de section), plus les titres en serif. Écrite
+ * en valeurs explicites (text-[13px]) : `cn` prendrait un nom inconnu (text-ui) pour une couleur.
+ */
+
 /* Clair : surfaces tonales lavande très pâle, encre violet-noir, accent violet Material */
 :root {
   --radius: 0.75rem;
