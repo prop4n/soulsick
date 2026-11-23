@@ -77,6 +77,7 @@ EN: dict[str, str] = {
     "reject.no_tracklist": "No MusicBrainz tracklist available",
     "reject.missing_tracks": "{n} track missing out of {total} (allowed: {allowed}) | {n} tracks missing out of {total} (allowed: {allowed})",
     "reject.titles": "Titles too different from the tracklist ({score} % < {min} %)",
+    "reject.peer_queue": "{n} files waiting in the peer's queue (more than {max}): it would not send",
 
     # --- journal
     "app.started": "Soulsick started",

@@ -150,6 +150,11 @@ def peer_points(c: ScoredCandidate, record: str | None = None) -> tuple[float, d
     }
 
 
+# A peer announcing more files than this in its upload queue is not chosen on its own. Measured on
+# mediabox (November 2026): of 55 sources announcing more than 1000 (bots with generated names,
+# 20 000 to 50 000 queued, "100 MB/s"), none sent a byte; of 913 announcing 0, 90 % did
+MAX_PEER_QUEUE = 1000
+
 # What a folder heavier than the preferred size loses: more than a better format or a better peer
 # can win back, so that a lighter folder of the same album comes first
 OVERSIZE_PENALTY = 40.0
@@ -233,6 +238,9 @@ def score_candidate(
             c.reject_reason = M("reject.missing_tracks", n=missing, total=len(rel.tracks), allowed=max_missing_tracks)
         elif m.title_score < min_match:
             c.reject_reason = M("reject.titles", score=round(m.title_score * 100), min=round(min_match * 100))
+        elif c.queue_size > MAX_PEER_QUEUE:
+            # Still listed, and can be taken by hand
+            c.reject_reason = M("reject.peer_queue", n=c.queue_size, max=MAX_PEER_QUEUE)
     return c
 
 

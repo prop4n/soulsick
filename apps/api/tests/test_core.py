@@ -204,3 +204,24 @@ def test_import_prefere_le_bon_titre_a_la_source_la_plus_recente():
     flac24 = pick_key("flac-24", failed=False, candidate_id=1, a=Assignment(0, 2, 0.9, 1.0, True, 0.2))
     flac16 = pick_key("flac", failed=False, candidate_id=2, a=Assignment(0, 2, 0.9, 1.0, True, 0.2))
     assert flac24 < flac16
+
+
+def test_un_pair_a_file_enorme_n_est_pas_choisi_tout_seul():
+    """Cas réel (mediabox, novembre 2026) : des pairs aux noms générés annoncent un slot libre,
+    30 000 fichiers en file et 100 Mo/s. Sur 55 choisis, aucun n'a envoyé un octet."""
+    rel = ReleaseOption(1, "Nevermind", TRACKS)
+
+    def flac(user):
+        return [RemoteFile(f"{user}\\Nevermind\\0{i+1} - {t.title}.flac", bit_depth=16, duration=int(t.length_s))
+                for i, t in enumerate(TRACKS)]
+
+    cands = rank_candidates(
+        [_peer("bot", flac("bot"), queue=31_458, speed=117_024_693), _peer("vrai", flac("vrai"), speed=900_000)],
+        [rel],
+        PROFILE,
+    )
+    by_user = {c.username: c for c in cands}
+    assert cands[0].username == "vrai"
+    assert by_user["bot"].reject_reason.key == "reject.peer_queue"
+    assert "31458" in by_user["bot"].reject_reason.text.replace(" ", "").replace(" ", "")
+
