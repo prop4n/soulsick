@@ -32,6 +32,7 @@ EN: dict[str, str] = {
     # --- album reasons (status_reason)
     "reason.no_edition": "No edition known on MusicBrainz",
     "reason.soulseek_unavailable": "Soulseek unavailable: {error}",
+    "reason.nothing_better": "The {n} folder found has nothing better than what is already there | None of the {n} folders found has anything better than what is already there",
     "reason.no_valid": "No valid candidate among {n} folder | No valid candidate among {n} folders",
     "reason.awaiting": "{n} proposal awaiting approval | {n} proposals awaiting approval",
     "reason.from_peer": "From {peer}",
@@ -71,6 +72,7 @@ EN: dict[str, str] = {
     "reason.restart_retried": "file retried on restart | files retried on restart",
 
     # --- candidate rejections (reject_reason)
+    "reject.brings_nothing": "Brings nothing: every track it has is already there, as good",
     "reject.not_better": "Not better than the present version ({format})",
     "reject.unknown_format": "Unrecognised format on some files",
     "reject.format_refused": "Format {format} not allowed by the profile",

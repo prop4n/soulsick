@@ -6,11 +6,11 @@ from typing import Literal
 from aioslsk.exceptions import NetworkError, NoSuchUserError
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
-from sqlalchemy import delete, desc, select
+from sqlalchemy import delete, desc, func, select
 
 from ..core import Core
 from ..messages import M
-from ..models import Share, Transfer, TransferState
+from ..models import Artist, Candidate, CandidateStatus, ReleaseGroup, Share, Transfer, TransferState
 from ..scoring import group_results
 from ..services.transfers import TERMINAL, transfer_to_dict
 from ..slsk.engine import EngineUnavailable
@@ -122,7 +122,37 @@ async def list_transfers(direction: str = "download", limit: int = 300, core: Co
                 )
             ).scalars()
         )
-    return [transfer_to_dict(t) | (core.transfers.live(t.id) or {}) if t.state not in TERMINAL else transfer_to_dict(t) for t in rows]
+        albums = await _albums_of(s, {t.release_group_id for t in rows if t.release_group_id})
+    return [
+        (transfer_to_dict(t) | (core.transfers.live(t.id) or {}) if t.state not in TERMINAL else transfer_to_dict(t))
+        | {"album": albums.get(t.release_group_id)}
+        for t in rows
+    ]
+
+
+async def _albums_of(s, ids: set[int]) -> dict[int, dict]:
+    """What the transfers page shows of each album: you follow an album, not loose files."""
+    if not ids:
+        return {}
+    rows = (await s.execute(
+        select(ReleaseGroup, Artist.name).join(Artist, Artist.id == ReleaseGroup.artist_id).where(ReleaseGroup.id.in_(ids))
+    )).all()
+    # How many sources were tried for it: the 47th attempt reads differently from the first
+    tries = dict((await s.execute(
+        select(Candidate.release_group_id, func.count(Candidate.id)).where(
+            Candidate.release_group_id.in_(ids),
+            Candidate.status.in_([
+                CandidateStatus.CHOSEN, CandidateStatus.DOWNLOADED, CandidateStatus.FAILED, CandidateStatus.IMPORTED,
+            ]),
+        ).group_by(Candidate.release_group_id)
+    )).all())
+    return {
+        rg.id: {
+            "id": rg.id, "mbid": rg.mbid, "title": rg.title, "artist": artist, "status": rg.status,
+            "total_tracks": rg.total_tracks, "attempts": tries.get(rg.id, 0),
+        }
+        for rg, artist in rows
+    }
 
 
 async def _get_transfer(core: Core, tid: int) -> Transfer:

@@ -13,7 +13,7 @@ import { transferState } from '@/lib/status'
 import { cn } from '@/lib/utils'
 import { useLive } from '@/stores/live'
 
-const props = withDefaults(defineProps<{ transfer: Transfer, actions?: boolean, busy?: boolean, selectable?: boolean, selected?: boolean }>(), { actions: true, busy: false, selectable: false, selected: false })
+const props = withDefaults(defineProps<{ transfer: Transfer, actions?: boolean, busy?: boolean, selectable?: boolean, selected?: boolean, peer?: boolean }>(), { actions: true, busy: false, selectable: false, selected: false, peer: true })
 const emit = defineEmits<{ cancel: [id: number], retry: [id: number], pause: [id: number], resume: [id: number], select: [id: number, on: boolean] }>()
 const { t } = useI18n()
 const live = useLive()
@@ -43,6 +43,13 @@ const connectingFor = computed(() => {
   const since = connectingSince.get(tr.value.id)
   return since && tr.value.state === 'initializing' ? Math.max(0, Math.round((now.value - since) / 1000)) : null
 })
+
+const DOT: Record<string, string> = {
+  success: 'bg-success', signal: 'bg-primary', warning: 'bg-warning', danger: 'bg-destructive', quiet: 'border border-faint',
+}
+
+/** The bar only says something while the file moves: a finished one has its badge */
+const showBar = computed(() => tr.value.state === 'transferring' || ((running.value || tr.value.state === 'paused') && tr.value.bytes_transferred > 0))
 
 /** When it ended, or else when it was asked for */
 const when = computed(() => {
@@ -76,24 +83,36 @@ const st = computed(() => {
 </script>
 
 <template>
-  <div :class="cn('group grid grid-cols-[1fr_auto] items-center gap-x-4 gap-y-1.5 py-2.5', selected && '-mx-4 bg-primary/[0.06] px-4')">
-    <div class="flex min-w-0 items-center gap-2.5">
+  <!-- One line per file: the album and the peer are in the card around it -->
+  <div :class="cn('group py-2', selected && '-mx-4 bg-primary/[0.06] px-4')">
+    <div class="flex min-h-6 items-center gap-3">
       <Checkbox
         v-if="selectable"
         :model-value="selected"
         :aria-label="t('folder.select', { name })"
         @update:model-value="(v) => emit('select', tr.id, v === true)"
       />
-      <span class="truncate text-[13px] text-foreground" :title="tr.remote_path">{{ name }}</span>
-    </div>
-    <div class="flex items-center gap-2">
-      <span class="font-mono text-[11px] text-muted-foreground tnum">
+      <span class="min-w-0 flex-1 truncate text-[13px] text-foreground" :title="tr.local_path ?? tr.remote_path">{{ name }}</span>
+      <RouterLink
+        v-if="peer"
+        :to="{ name: 'peer', params: { username: tr.username } }"
+        class="hidden max-w-40 truncate font-mono text-[11.5px] text-faint hover:text-primary sm:inline"
+        :title="tr.direction === 'download' ? t('transfer.from') : t('transfer.to')"
+      >
+        {{ tr.username }}
+      </RouterLink>
+      <span class="hidden shrink-0 font-mono text-[11px] text-muted-foreground tnum sm:inline">
         <template v-if="tr.state === 'transferring'">{{ speed(tr.speed) }} · </template>
-        {{ bytes(tr.bytes_transferred) }}<span class="text-faint"> / {{ bytes(tr.size) }}</span>
+        <template v-if="tr.state === 'complete' || !tr.bytes_transferred">{{ tr.size ? bytes(tr.size) : '' }}</template>
+        <template v-else>{{ bytes(tr.bytes_transferred) }}<span class="text-faint"> / {{ bytes(tr.size) }}</span></template>
       </span>
       <Tooltip>
         <TooltipTrigger as-child>
-          <span class="inline-flex"><Badge :variant="st.badge">{{ st.label }}</Badge></span>
+          <span class="inline-flex shrink-0" :aria-label="st.label">
+            <!-- Narrow screens: a dot, the file name keeps the room -->
+            <span :class="cn('size-2 rounded-full sm:hidden', DOT[st.badge] ?? 'bg-faint')" />
+            <Badge :variant="st.badge" class="hidden sm:inline-flex">{{ st.label }}</Badge>
+          </span>
         </TooltipTrigger>
         <TooltipContent class="max-w-64">
           <template v-if="stuck">
@@ -112,8 +131,8 @@ const st = computed(() => {
           </template>
         </TooltipContent>
       </Tooltip>
-      <span v-if="(tr.attempts ?? 1) > 1" class="font-mono text-[10.5px] text-faint tnum" :title="t('transfer.attempts')">{{ t('transfer.attempt', { n: tr.attempts }) }}</span>
-      <template v-if="actions">
+      <span v-if="(tr.attempts ?? 1) > 1" class="shrink-0 font-mono text-[10.5px] text-faint tnum" :title="t('transfer.attempts')">{{ t('transfer.attempt', { n: tr.attempts }) }}</span>
+      <div v-if="actions" class="flex shrink-0 sm:w-[76px] items-center justify-end gap-0.5">
         <Tooltip v-if="running && tr.direction === 'download'">
           <TooltipTrigger as-child>
             <Button variant="ghost" size="icon-xs" class="text-faint hover:text-foreground" :aria-label="t('common.pause')" :disabled="busy" @click="emit('pause', tr.id)">
@@ -122,17 +141,14 @@ const st = computed(() => {
           </TooltipTrigger>
           <TooltipContent>{{ t('transfer.pauseHint') }}</TooltipContent>
         </Tooltip>
-        <Button
-          v-if="tr.state === 'paused'"
-          variant="ghost"
-          size="xs"
-          class="text-primary"
-          :disabled="busy"
-          @click="emit('resume', tr.id)"
-        >
-          <PlayIcon data-icon="inline-start" />
-          {{ t('common.resume') }}
-        </Button>
+        <Tooltip v-if="tr.state === 'paused'">
+          <TooltipTrigger as-child>
+            <Button variant="ghost" size="icon-xs" class="text-primary" :aria-label="t('common.resume')" :disabled="busy" @click="emit('resume', tr.id)">
+              <PlayIcon />
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent>{{ t('common.resume') }}</TooltipContent>
+        </Tooltip>
         <Tooltip v-if="running || tr.state === 'paused'">
           <TooltipTrigger as-child>
             <Button variant="ghost" size="icon-xs" class="text-faint hover:text-destructive" :aria-label="t('common.cancel')" :disabled="busy" @click="emit('cancel', tr.id)">
@@ -143,36 +159,27 @@ const st = computed(() => {
         </Tooltip>
         <Tooltip v-else-if="tr.direction === 'download' && tr.state !== 'complete'">
           <TooltipTrigger as-child>
-            <Button variant="ghost" size="xs" class="text-muted-foreground hover:text-primary" :disabled="busy" @click="emit('retry', tr.id)">
-              <RotateCcwIcon data-icon="inline-start" />
-              {{ t('common.retry') }}
+            <Button variant="ghost" size="icon-xs" class="text-muted-foreground hover:text-primary" :aria-label="t('common.retry')" :disabled="busy" @click="emit('retry', tr.id)">
+              <RotateCcwIcon />
             </Button>
           </TooltipTrigger>
           <TooltipContent>{{ t('transfer.retryHint') }}</TooltipContent>
         </Tooltip>
-        <span v-else class="size-6" />
-      </template>
-    </div>
-    <div class="col-span-2 flex min-w-0 items-center gap-3">
-      <div class="h-[3px] flex-1 overflow-hidden rounded-full bg-border">
-        <div
-          :class="cn('h-full rounded-full transition-[width] duration-500',
-                     tr.state === 'complete' ? 'bg-success' : tr.state === 'failed' ? 'bg-destructive' : 'bg-primary')"
-          :style="{ width: `${tr.state === 'complete' ? 100 : pct}%` }"
-        />
       </div>
+      <time v-if="when" :datetime="when.iso" :title="when.hint" class="hidden w-24 shrink-0 text-right font-mono text-[11px] text-faint tnum md:block">{{ when.text }}</time>
     </div>
-    <div class="col-span-2 flex min-w-0 flex-wrap items-center gap-x-3 gap-y-0.5 text-[11.5px]">
-      <span class="text-faint">{{ tr.direction === 'download' ? t('transfer.from') : t('transfer.to') }}</span>
-      <RouterLink :to="{ name: 'peer', params: { username: tr.username } }" class="font-mono text-muted-foreground hover:text-primary">
-        {{ tr.username }}
-      </RouterLink>
-      <template v-if="tr.local_path">
-        <span class="text-faint">{{ tr.direction === 'download' ? '→' : t('transfer.file') }}</span>
-        <span class="min-w-0 truncate font-mono text-faint" :title="tr.local_path">{{ tr.local_path }}</span>
-      </template>
-      <span v-if="tr.error" class="text-destructive">{{ tr.error }}</span>
-      <time v-if="when" :datetime="when.iso" :title="when.hint" class="ml-auto shrink-0 font-mono text-faint tnum">{{ when.text }}</time>
+    <div v-if="showBar" :class="cn('mt-1.5 h-[2px] overflow-hidden rounded-full bg-border', selectable && 'ml-7')">
+      <div
+        :class="cn('h-full rounded-full transition-[width] duration-500', stuck ? 'bg-warning' : 'bg-primary')"
+        :style="{ width: `${pct}%` }"
+      />
     </div>
+    <p
+      v-if="tr.error && tr.state !== 'complete'"
+      :class="cn('mt-0.5 truncate text-[11.5px]', selectable && 'ml-7', tr.state === 'failed' ? 'text-destructive' : 'text-faint')"
+      :title="tr.error"
+    >
+      {{ tr.error }}
+    </p>
   </div>
 </template>

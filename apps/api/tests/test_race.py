@@ -71,7 +71,13 @@ async def test_personne_n_envoie_l_album_reste_au_meilleur(ctx):  # noqa: F811
     await wait_for(decided)
 
     async def settled():
-        return all(c.status != "chosen" or c.username == "muet" for c in (await _candidates(core, rid)).values())
+        # The other source given back, and the rest of the album asked from muet (a moment later)
+        cands = await _candidates(core, rid)
+        if not all(c.status != "chosen" or c.username == "muet" for c in cands.values()):
+            return False
+        async with core.db.session() as s:
+            n = len(list((await s.execute(select(Transfer).where(Transfer.candidate_id == cands["muet"].id))).scalars()))
+        return n == len(TRACKS)
 
     await wait_for(settled)
     cands = await _candidates(core, rid)

@@ -11,9 +11,11 @@ import re
 from dataclasses import dataclass, field
 
 from .lyrics import DOWNLOADED_LYRICS
-from .matching import FileRef, MatchResult, TrackRef, match_files, normalize
+from .matching import FileRef, MatchResult, TrackRef, has_title, match_files, normalize
 from .messages import M, Msg
-from .quality import FORMAT_LABELS, FileInfo, detect_format, extension_of, format_rank, is_audio, worst_format
+from .quality import (
+    FORMAT_LABELS, FileInfo, detect_format, extension_of, format_rank, is_audio, is_better_or_equal, worst_format,
+)
 
 _DISC_DIR = re.compile(r"^(?:cd|disc|disk)\s*\d+$", re.I)
 EXTRA_EXTENSIONS = {"jpg", "jpeg", "png", "cue", "log", *DOWNLOADED_LYRICS}
@@ -66,6 +68,8 @@ class ReleaseOption:
     tracks: list[TrackRef]
     # Indexes of tracks already in the library: a folder lacking them is not "missing" anything
     owned: frozenset[int] = frozenset()
+    # Their format as shelved, when known: a folder can bring a better version of them
+    formats: dict[int, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -160,6 +164,25 @@ MAX_PEER_QUEUE = 1000
 OVERSIZE_PENALTY = 40.0
 
 
+def useful_files(c: ScoredCandidate, m: MatchResult, rel: ReleaseOption) -> list[str]:
+    """The audio files of a folder worth asking: a track not shelved yet, or a shelved one in a
+    strictly better format. Files matching no track (the rest of a compilation) are not."""
+    out = []
+    for a in m.assignments:
+        f = c.audio_files[a.file_index]
+        if a.track_index not in rel.owned:
+            out.append(f.filename)
+            continue
+        # Upgrading a track only on a sure match: "06-deviantart.flac", from another EP of the same
+        # peer, is not a better "06 - A7"
+        if a.title_score < 0.5 and not (a.number_match and not has_title(f.filename)):
+            continue
+        have, new = rel.formats.get(a.track_index), detect_format(f.info)
+        if have and new and not is_better_or_equal(have, new):
+            out.append(f.filename)
+    return out
+
+
 def score_candidate(
     c: ScoredCandidate,
     releases: list[ReleaseOption],
@@ -241,6 +264,14 @@ def score_candidate(
         elif c.queue_size > MAX_PEER_QUEUE:
             # Still listed, and can be taken by hand
             c.reject_reason = M("reject.peer_queue", n=c.queue_size, max=MAX_PEER_QUEUE)
+        else:
+            useful = useful_files(c, m, rel)
+            if rel.owned and not useful:
+                # Everything it has is already there, as good: taking it again changes nothing
+                c.reject_reason = M("reject.brings_nothing")
+            elif len(useful) < len(c.audio_files):
+                # Only these are asked (see HunterService.start_download)
+                c.detail["useful"] = useful
     return c
 
 

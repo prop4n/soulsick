@@ -20,6 +20,7 @@ const serverFr: Record<string, string> = {
 
   'reason.no_edition': 'Aucune édition connue sur MusicBrainz',
   'reason.soulseek_unavailable': 'Soulseek indisponible : {error}',
+  'reason.nothing_better': 'Le dossier trouvé n’a rien de mieux que ce qui est déjà là | Aucun des {n} dossiers trouvés n’a rien de mieux que ce qui est déjà là',
   'reason.no_valid': 'Aucun candidat valable parmi {n} dossier | Aucun candidat valable parmi {n} dossiers',
   'reason.awaiting': '{n} proposition en attente de validation | {n} propositions en attente de validation',
   'reason.from_peer': 'Depuis {peer}',
@@ -58,6 +59,7 @@ const serverFr: Record<string, string> = {
   'reason.library_unavailable': 'En attente du dossier de la bibliothèque : {problem}',
   'reason.restart_retried': 'fichier relancé au redémarrage | fichiers relancés au redémarrage',
 
+  'reject.brings_nothing': 'N’apporte rien : chaque piste qu’il a est déjà là, aussi bonne',
   'reject.not_better': 'Pas mieux que la version présente ({format})',
   'reject.unknown_format': 'Format non reconnu sur certains fichiers',
   'reject.format_refused': 'Format {format} non autorisé par le profil',

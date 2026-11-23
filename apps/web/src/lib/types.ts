@@ -267,6 +267,19 @@ export interface Transfer {
   stuck?: boolean
   stuck_reason?: StuckReason | null
   stuck_since?: string | null
+  /** The album it is for (transfers list only) */
+  album?: TransferAlbum | null
+}
+
+export interface TransferAlbum {
+  id: number
+  mbid: string
+  title: string
+  artist: string
+  status: AlbumStatus
+  total_tracks: number | null
+  /** Sources tried for it so far */
+  attempts: number
 }
 
 export type StuckReason = 'no_progress' | 'queue_frozen' | 'retrying'

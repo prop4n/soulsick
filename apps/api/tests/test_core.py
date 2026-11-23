@@ -225,3 +225,46 @@ def test_un_pair_a_file_enorme_n_est_pas_choisi_tout_seul():
     assert by_user["bot"].reject_reason.key == "reject.peer_queue"
     assert "31458" in by_user["bot"].reject_reason.text.replace(" ", "").replace(" ", "")
 
+
+
+# --- a folder is only taken for what it brings -----------------------------------------
+
+VM_TRACKS = [TrackRef(1, i + 1, t, ln / 1000) for i, (t, ln) in enumerate(VM)]
+
+
+def _vm_folder(user, names):
+    return [RemoteFile(f"{user}\\vm\\{n}.flac", bit_depth=16) for n in names]
+
+
+def test_un_dossier_qui_n_apporte_rien_n_est_plus_retelecharge():
+    """Cas réel (mediabox) : 5 pistes en FLAC, la 6 « A7 » en MP3 192. Le seul dossier trouvé a les
+    5 mêmes FLAC (et « 06-deviantart », d'un autre EP) : il était repris toutes les 12 h, 47 fois."""
+    present = ReleaseOption(1, "VM", VM_TRACKS, owned=frozenset(range(6)),
+                            formats={0: "flac", 1: "flac", 2: "flac", 3: "flac", 4: "flac", 5: "mp3-192"})
+    same = _vm_folder("meme", ["01-machine_virtuelle", "02-la_chose", "03-100_bouche(s)", "04-eugene_stoner",
+                               "05-warp_0", "06-deviantart"])
+    better = _vm_folder("mieux", ["01-machine_virtuelle", "02-la_chose", "03-100_bouche(s)", "04-eugene_stoner",
+                                  "05-warp_0", "06-A7"])
+    cands = rank_candidates([_peer("meme", same), _peer("mieux", better)], [present], PROFILE, artist_hint="Ptite Soeur")
+    by_user = {c.username: c for c in cands}
+    assert by_user["meme"].reject_reason.key == "reject.brings_nothing"
+    assert not by_user["mieux"].rejected
+    # Only the track it improves is asked, not the one already there in FLAC
+    assert by_user["mieux"].detail["useful"] == ["mieux\\vm\\06-A7.flac"]
+
+
+def test_une_compilation_ne_fait_demander_que_les_pistes_de_l_album():
+    """Cas réel : pour un EP de 4 titres de Dalida, un dossier de 56 fichiers était demandé en entier."""
+    tracks = [TrackRef(1, i + 1, t, 180) for i, t in enumerate(["Dans le bleu du ciel bleu", "La Montagne", "Dieu seul", "Tesoro mio"])]
+    others = [f"{i:02d} - Chanson {i}" for i in range(5, 40)]
+    files = [RemoteFile(f"x\\compil\\{n}.flac", bit_depth=16, duration=180)
+             for n in ["01 - Dans le bleu du ciel bleu", "02 - La Montagne", "03 - Dieu seul", "04 - Tesoro mio", *others]]
+    c = rank_candidates([_peer("x", files)], [ReleaseOption(1, "EP", tracks)], PROFILE, max_missing_tracks=0)[0]
+    assert sorted(c.detail["useful"]) == sorted(f.filename for f in files[:4])
+
+
+def test_un_dossier_complet_pour_un_album_absent_est_pris_en_entier():
+    rel = ReleaseOption(1, "Nevermind", TRACKS)
+    flac = [RemoteFile(f"u\\N\\0{i+1} - {t.title}.flac", bit_depth=16) for i, t in enumerate(TRACKS)]
+    c = rank_candidates([_peer("u", flac)], [rel], PROFILE)[0]
+    assert not c.rejected and "useful" not in c.detail

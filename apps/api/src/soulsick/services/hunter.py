@@ -78,6 +78,25 @@ def summarize_rejections(cands: list[ScoredCandidate]) -> dict[str, int]:
     return dict(c.most_common(6))
 
 
+
+def _stem(path: str) -> str:
+    return path.replace("\\", "/").rsplit("/", 1)[-1].rsplit(".", 1)[0].lower()
+
+
+def _only_useful(files: list[dict], useful: list[str] | None) -> list[dict]:
+    """A folder taken for some of its tracks (see scoring.useful_files): only those, their lyrics
+    and the covers. The rest (tracks already there as good, the rest of a compilation) is not asked."""
+    if not useful:
+        return files
+    keep = set(useful)
+    stems = {_stem(f) for f in useful}
+    return [
+        f for f in files
+        if f["filename"] in keep
+        or (f.get("extra") and (extension_of(f["filename"]) not in DOWNLOADED_LYRICS or _stem(f["filename"]) in stems))
+        or (not f.get("extra") and not is_audio(f["filename"]))
+    ]
+
 class HunterService:
     def __init__(self, core: Core) -> None:
         self.core = core
@@ -288,7 +307,11 @@ class HunterService:
 
         rejections = summarize_rejections(scored)
         if not valid:
-            reason = M("reason.no_valid", n=len(scored))
+            nothing_better = bool(scored) and all(
+                c.reject_reason and c.reject_reason.key in ("reject.brings_nothing", "reject.not_better") for c in scored
+            )
+            # Every folder found has only what is already there: said plainly, not "no valid candidate"
+            reason = M("reason.nothing_better", n=len(scored)) if nothing_better else M("reason.no_valid", n=len(scored))
             await self._set_status(rg_id, AlbumStatus.WANTED, reason, searched=True)
             await self.core.journal.emit(
                 "hunt.no_candidate",
@@ -323,15 +346,17 @@ class HunterService:
     async def _options(self, rg: ReleaseGroup, releases: list) -> list[ReleaseOption]:
         async with self.core.db.session() as s:
             # Tracks already shelved (e.g. by hand): a folder only needs to bring the others
-            shelved = set((await s.execute(select(LibraryFile.recording_mbid).where(
+            # ...and in which format: a folder bringing nothing better is not taken again
+            shelved = dict((await s.execute(select(LibraryFile.recording_mbid, LibraryFile.format).where(
                 LibraryFile.release_group_mbid == rg.mbid, LibraryFile.recording_mbid.is_not(None),
-            ))).scalars())
+            ))).all())
         options = [
             ReleaseOption(
                 r.id,
                 f"{r.title} ({r.date or '?'} · {r.country or '?'} · {r.formats or '?'} · {r.track_count} tr.)",
                 [TrackRef(t.disc, t.position, t.title, (t.length_ms or 0) / 1000 or None) for t in r.tracks],
                 frozenset(i for i, t in enumerate(r.tracks) if t.recording_mbid in shelved),
+                {i: shelved[t.recording_mbid] for i, t in enumerate(r.tracks) if shelved.get(t.recording_mbid)},
             )
             for r in releases
             if r.tracks
@@ -411,6 +436,7 @@ class HunterService:
                 f for f, lyr in sorted(zip(c.files, is_lyrics, strict=True), key=lambda x: not x[1])
                 if lyr or not f.get("extra") or cfg.download_covers
             ]
+            files = _only_useful(files, (c.score_detail or {}).get("useful"))
             transfers = []
             for f in files:
                 if f["filename"] in own:
@@ -781,7 +807,8 @@ class HunterService:
                     Transfer.candidate_id == prev.id, Transfer.state == TransferState.COMPLETE,
                 ))).scalars())
             first = next(
-                (f for f in c.files if not f.get("extra") and is_audio(f["filename"]) and f["filename"] not in had),
+                (f for f in _only_useful(c.files, (c.score_detail or {}).get("useful"))
+                 if not f.get("extra") and is_audio(f["filename"]) and f["filename"] not in had),
                 None,
             )
             if first is None:
