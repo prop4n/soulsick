@@ -88,6 +88,8 @@ class HunterService:
         self._retrying: set[int] = set()
         # Sources whose first track is being tried (see _race): judged by the race, not one by one
         self._racing: set[int] = set()
+        # Racing sources whose file reached a final state meanwhile: judged once released
+        self._deferred: set[int] = set()
         self.race_poll = 1.0
         # Silent sources being raced, and the replacements already tried for each
         self._relieving: set[int] = set()
@@ -563,15 +565,26 @@ class HunterService:
                 )
         except Exception:
             log.exception("race")
-        finally:
-            self._racing.difference_update(ids)
         # Nobody still waiting (all refused): every first track is dropped, the best starts over
         keep = winner if winner is not None and winner in alive else None
+        # Still racing until the rest of the album is asked: the first track may arrive meanwhile,
+        # and alone it looked like a whole album received
+        try:
+            for cid in ids:
+                if cid != keep:
+                    await self._give_back(cid, M("reason.race_lost", peer=names.get(winner or -1, "?")) if sent
+                                          else M("reason.race_kept", peer=names.get(keep or ids[0], "?")))
+            await self.start_download(ids[0] if keep is None else keep, by="auto")
+        finally:
+            await self._release(ids)
+
+    async def _release(self, ids: list[int]) -> None:
+        """The race is over for these sources: what arrived meanwhile is judged now."""
+        self._racing.difference_update(ids)
         for cid in ids:
-            if cid != keep:
-                await self._give_back(cid, M("reason.race_lost", peer=names.get(winner or -1, "?")) if sent
-                                      else M("reason.race_kept", peer=names.get(keep or ids[0], "?")))
-        await self.start_download(ids[0] if keep is None else keep, by="auto")
+            if cid in self._deferred:
+                self._deferred.discard(cid)
+                await self.on_transfer_terminal(cid)
 
     async def _first_to_send(self, watch: dict[int, list[int]], seconds: float) -> tuple[list[int], list[int]]:
         """Waits until one of the sources sends (its first bytes, not just a yes), all of them
@@ -737,17 +750,20 @@ class HunterService:
             log.exception("relief")
             winner = None
         finally:
-            self._racing.difference_update(subs)
             self._relieving.discard(candidate_id)
-        for cid in subs:
-            if cid != winner:
-                await self._give_back(cid, M("reason.race_lost", peer=names.get(winner or -1, "?")) if winner
-                                      else M("reason.race_kept", peer=names.get(candidate_id, "?")))
-        if winner is not None and winner != candidate_id:
-            relieved = M("reason.relieved", peer=names[winner])
-            await self._drop_source(candidate_id, relieved, file_reason=relieved)
-            self._relief_tried.pop(candidate_id, None)
-            await self.start_download(winner, by="auto")
+        # Still racing until the rest of the album is asked (see _race)
+        try:
+            for cid in subs:
+                if cid != winner:
+                    await self._give_back(cid, M("reason.race_lost", peer=names.get(winner or -1, "?")) if winner
+                                          else M("reason.race_kept", peer=names.get(candidate_id, "?")))
+            if winner is not None and winner != candidate_id:
+                relieved = M("reason.relieved", peer=names[winner])
+                await self._drop_source(candidate_id, relieved, file_reason=relieved)
+                self._relief_tried.pop(candidate_id, None)
+                await self.start_download(winner, by="auto")
+        finally:
+            await self._release(subs)
 
     async def _probe(self, candidate_id: int) -> int | None:
         """Asks only the first track of a source; returns its transfer."""
@@ -820,6 +836,7 @@ class HunterService:
         - candidate already dropped but every file arrived after all: import anyway.
         """
         if candidate_id in self._racing:
+            self._deferred.add(candidate_id)
             return  # its first track only: the race decides
         async with self.core.db.session() as s:
             c = await s.get(Candidate, candidate_id)
