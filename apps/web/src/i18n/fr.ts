@@ -396,6 +396,9 @@ const fr: Messages = {
     nothingDone: 'Rien à faire pour ces transferts',
     from: 'depuis',
     to: 'vers',
+    endedAt: 'Terminé le {date}',
+    requestedAt: 'Demandé le {date}',
+    askedAt: 'Demandé par ce pair le {date}',
     file: 'fichier',
     done: {
       cancel: 'Transfert annulé',

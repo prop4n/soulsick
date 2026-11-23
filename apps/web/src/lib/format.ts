@@ -50,6 +50,22 @@ export function clock(iso: string): string {
   return new Date(iso).toLocaleTimeString(intlLocale(), { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false })
 }
 
+/** A moment in a list: "14:32" today, "21 Nov 14:32" this year, with the year before that */
+export function stamp(iso: string): string {
+  const d = new Date(iso)
+  const now = new Date()
+  const time = d.toLocaleTimeString(intlLocale(), { hour: '2-digit', minute: '2-digit', hour12: false })
+  if (d.toDateString() === now.toDateString())
+    return time
+  const day = d.toLocaleDateString(intlLocale(), { day: 'numeric', month: 'short', ...(d.getFullYear() === now.getFullYear() ? {} : { year: 'numeric' }) })
+  return `${day} ${time}`
+}
+
+/** The full date and time, for a tooltip */
+export function fullDate(iso: string): string {
+  return new Date(iso).toLocaleString(intlLocale(), { dateStyle: 'full', timeStyle: 'short' })
+}
+
 export function dayLabel(iso: string): string {
   const d = new Date(iso)
   const today = new Date()

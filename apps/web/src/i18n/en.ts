@@ -397,6 +397,9 @@ const en = {
     nothingDone: 'Nothing to do for these transfers',
     from: 'from',
     to: 'to',
+    endedAt: 'Ended {date}',
+    requestedAt: 'Requested {date}',
+    askedAt: 'Asked by this peer {date}',
     file: 'file',
     done: {
       cancel: 'Transfer cancelled',

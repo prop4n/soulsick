@@ -151,152 +151,162 @@ async function logout() {
     >{{ t('shell.skip') }}</a>
 
     <!-- Sidebar: sits on the frame, the content is the inset panel next to it -->
-    <aside :class="cn('sticky top-0 hidden h-svh shrink-0 flex-col lg:flex', rail ? 'w-14' : 'w-[248px]')">
-      <div :class="cn('flex h-16 items-center', rail ? 'justify-center' : 'px-5')">
-        <RouterLink :to="{ name: 'home' }" class="flex items-baseline gap-1.5 rounded-md" :aria-label="rail ? 'soulsick' : undefined">
-          <span class="font-serif text-[24px] leading-none italic text-foreground">{{ rail ? 's' : 'soulsick' }}</span>
-          <span class="size-1.5 rounded-full bg-primary" />
+    <!-- Both modes render the same rows: icons keep their column and only the width moves,
+         so collapsing slides instead of jumping -->
+    <aside
+      :class="cn('sticky top-0 hidden h-svh shrink-0 flex-col overflow-hidden transition-[width] duration-200 ease-[cubic-bezier(0.2,0,0,1)] motion-reduce:transition-none lg:flex',
+                 rail ? 'w-14' : 'w-[248px]')"
+    >
+      <div class="flex h-16 shrink-0 items-center px-5">
+        <RouterLink :to="{ name: 'home' }" class="flex items-baseline rounded-md" aria-label="soulsick">
+          <span class="font-serif text-[24px] leading-none italic text-foreground">s</span>
+          <span
+            :class="cn('overflow-hidden font-serif text-[24px] leading-none whitespace-nowrap italic text-foreground transition-[max-width,opacity] duration-200 motion-reduce:transition-none',
+                       rail ? 'max-w-0 opacity-0' : 'max-w-28 opacity-100')"
+            aria-hidden="true"
+          >oulsick</span>
+          <span class="ml-1.5 size-1.5 shrink-0 rounded-full bg-primary" />
         </RouterLink>
       </div>
 
-      <nav :class="cn('scrollbar-thin flex flex-1 flex-col gap-6 overflow-y-auto pb-4', rail ? 'items-center px-3' : 'px-3')">
-        <div v-for="(g, gi) in groups" :key="gi" :class="cn('flex flex-col gap-1', rail && 'items-center')">
-          <p v-if="g.label && !rail" class="px-2 pb-1 text-[12px] font-medium text-faint">
-            {{ g.label }}
-          </p>
-          <template v-for="item in g.items" :key="item.name">
-            <Tooltip v-if="rail">
-              <TooltipTrigger as-child>
-                <RouterLink
-                  :to="{ name: item.name }"
-                  :aria-label="item.label"
-                  :class="cn(
-                    'relative flex size-8 items-center justify-center rounded-md transition-colors',
-                    isActive(item) ? 'bg-primary/12 text-primary' : 'text-muted-foreground hover:bg-accent hover:text-foreground',
-                  )"
-                >
-                  <component :is="item.icon" class="size-4" :stroke-width="1.5" />
-                  <span
-                    v-if="item.count"
-                    :class="cn('absolute top-1 right-1 size-1.5 rounded-full', item.tone === 'warning' ? 'bg-warning' : 'bg-primary')"
-                  />
-                </RouterLink>
-              </TooltipTrigger>
-              <TooltipContent side="right">
-                {{ item.label }}<template v-if="item.count">
-                  · {{ item.count }}
-                </template>
-              </TooltipContent>
-            </Tooltip>
-            <RouterLink
-              v-else
-              :to="{ name: item.name }"
-              :class="cn(
-                'flex h-8 items-center gap-2 rounded-md px-2 text-[13px] transition-colors',
-                isActive(item) ? 'bg-primary/12 text-primary' : 'text-muted-foreground hover:bg-accent hover:text-foreground',
-              )"
-            >
-              <component :is="item.icon" class="size-4 shrink-0" :stroke-width="1.5" />
-              <span class="flex-1 truncate">{{ item.label }}</span>
-              <span
-                v-if="item.count"
+      <nav class="scrollbar-thin flex flex-1 flex-col gap-6 overflow-x-hidden overflow-y-auto px-3 pb-4">
+        <div v-for="(g, gi) in groups" :key="gi" class="flex flex-col gap-1">
+          <div
+            v-if="g.label"
+            :class="cn('grid transition-[grid-template-rows,opacity] duration-200 motion-reduce:transition-none',
+                       rail ? 'grid-rows-[0fr] opacity-0' : 'grid-rows-[1fr] opacity-100')"
+            :aria-hidden="rail"
+          >
+            <p class="overflow-hidden px-2 pb-1 text-[12px] font-medium whitespace-nowrap text-faint">
+              {{ g.label }}
+            </p>
+          </div>
+          <Tooltip v-for="item in g.items" :key="item.name" :disabled="!rail">
+            <TooltipTrigger as-child>
+              <RouterLink
+                :to="{ name: item.name }"
+                :aria-label="rail ? item.label : undefined"
                 :class="cn(
-                  'min-w-5 rounded-[4px] px-1 text-center font-mono text-[11px] leading-[18px] tnum',
-                  item.tone === 'warning' ? 'bg-warning/15 text-warning' : 'bg-primary/12 text-primary',
+                  'relative flex h-8 items-center gap-2 overflow-hidden rounded-md px-2 text-[13px] whitespace-nowrap transition-colors',
+                  isActive(item) ? 'bg-primary/12 text-primary' : 'text-muted-foreground hover:bg-accent hover:text-foreground',
                 )"
-              >{{ item.count }}</span>
-            </RouterLink>
-          </template>
+              >
+                <component :is="item.icon" class="size-4 shrink-0" :stroke-width="1.5" />
+                <span class="flex-1 truncate">{{ item.label }}</span>
+                <span
+                  v-if="item.count && !rail"
+                  :class="cn(
+                    'min-w-5 rounded-[4px] px-1 text-center font-mono text-[11px] leading-[18px] tnum',
+                    item.tone === 'warning' ? 'bg-warning/15 text-warning' : 'bg-primary/12 text-primary',
+                  )"
+                >{{ item.count }}</span>
+                <span
+                  v-else-if="item.count"
+                  :class="cn('absolute top-1 left-6 size-1.5 rounded-full', item.tone === 'warning' ? 'bg-warning' : 'bg-primary')"
+                />
+              </RouterLink>
+            </TooltipTrigger>
+            <TooltipContent side="right">
+              {{ item.label }}<template v-if="item.count">
+                · {{ item.count }}
+              </template>
+            </TooltipContent>
+          </Tooltip>
         </div>
       </nav>
 
-      <!-- Footer, rail: one icon per line, the text in a tooltip -->
-      <div v-if="rail" class="flex flex-col items-center gap-1 p-3">
-        <Tooltip v-if="hunterLine">
-          <TooltipTrigger as-child>
-            <span class="flex size-8 items-center justify-center" tabindex="0" :aria-label="hunterLine.text">
-              <span :class="cn('size-1.5 rounded-full', hunterLine.active ? 'animate-pulse bg-primary' : 'bg-faint')" />
-            </span>
-          </TooltipTrigger>
-          <TooltipContent side="right">
-            {{ hunterLine.text }}
-          </TooltipContent>
-        </Tooltip>
-        <Tooltip v-if="status && status.storage !== 'ok'">
-          <TooltipTrigger as-child>
-            <RouterLink
-              :to="{ name: 'settings', query: { tab: 'library' } }"
-              :aria-label="t(`storage.sidebar.${status.storage}`)"
-              :class="cn('flex size-8 items-center justify-center rounded-md',
-                         status.storage === 'critical' ? 'text-destructive' : 'text-warning')"
-            >
-              <HardDriveIcon class="size-4" :stroke-width="1.5" />
-            </RouterLink>
-          </TooltipTrigger>
-          <TooltipContent side="right">
-            {{ t(`storage.sidebar.${status.storage}`) }}
-          </TooltipContent>
-        </Tooltip>
-        <Tooltip>
-          <TooltipTrigger as-child>
-            <Button variant="ghost" size="icon-sm" class="text-muted-foreground" :aria-label="themeLabel" @click="toggleTheme">
-              <SunIcon v-if="isDark" class="size-4" :stroke-width="1.5" />
-              <MoonIcon v-else class="size-4" :stroke-width="1.5" />
-            </Button>
-          </TooltipTrigger>
-          <TooltipContent side="right">
-            {{ themeLabel }}
-          </TooltipContent>
-        </Tooltip>
-        <Tooltip>
-          <TooltipTrigger as-child>
-            <Button variant="ghost" size="icon-sm" class="text-muted-foreground" :aria-label="t('shell.logout')" @click="logout">
-              <LogOutIcon class="size-4" :stroke-width="1.5" />
-            </Button>
-          </TooltipTrigger>
-          <TooltipContent side="right">
-            {{ t('shell.logout') }} · {{ session.state?.username }}
-          </TooltipContent>
-        </Tooltip>
-      </div>
+      <!-- Footer, rail: one icon per line, the text in a tooltip. The two footers differ too much
+         to share rows: the new one fades in once the width has moved -->
+      <Transition
+        enter-from-class="opacity-0"
+        enter-active-class="transition-opacity duration-150 delay-150 motion-reduce:transition-none"
+      >
+        <div v-if="rail" class="flex w-14 shrink-0 flex-col items-center gap-1 p-3">
+          <Tooltip v-if="hunterLine">
+            <TooltipTrigger as-child>
+              <span class="flex size-8 items-center justify-center" tabindex="0" :aria-label="hunterLine.text">
+                <span :class="cn('size-1.5 rounded-full', hunterLine.active ? 'animate-pulse bg-primary' : 'bg-faint')" />
+              </span>
+            </TooltipTrigger>
+            <TooltipContent side="right">
+              {{ hunterLine.text }}
+            </TooltipContent>
+          </Tooltip>
+          <Tooltip v-if="status && status.storage !== 'ok'">
+            <TooltipTrigger as-child>
+              <RouterLink
+                :to="{ name: 'settings', query: { tab: 'library' } }"
+                :aria-label="t(`storage.sidebar.${status.storage}`)"
+                :class="cn('flex size-8 items-center justify-center rounded-md',
+                           status.storage === 'critical' ? 'text-destructive' : 'text-warning')"
+              >
+                <HardDriveIcon class="size-4" :stroke-width="1.5" />
+              </RouterLink>
+            </TooltipTrigger>
+            <TooltipContent side="right">
+              {{ t(`storage.sidebar.${status.storage}`) }}
+            </TooltipContent>
+          </Tooltip>
+          <Tooltip>
+            <TooltipTrigger as-child>
+              <Button variant="ghost" size="icon-sm" class="text-muted-foreground" :aria-label="themeLabel" @click="toggleTheme">
+                <SunIcon v-if="isDark" class="size-4" :stroke-width="1.5" />
+                <MoonIcon v-else class="size-4" :stroke-width="1.5" />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent side="right">
+              {{ themeLabel }}
+            </TooltipContent>
+          </Tooltip>
+          <Tooltip>
+            <TooltipTrigger as-child>
+              <Button variant="ghost" size="icon-sm" class="text-muted-foreground" :aria-label="t('shell.logout')" @click="logout">
+                <LogOutIcon class="size-4" :stroke-width="1.5" />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent side="right">
+              {{ t('shell.logout') }} · {{ session.state?.username }}
+            </TooltipContent>
+          </Tooltip>
+        </div>
 
-      <!-- Footer, full -->
-      <div v-else class="flex flex-col gap-3 p-3">
-        <div v-if="hunterLine" class="flex items-center gap-2 px-2 text-[12px]">
-          <span :class="cn('size-1.5 shrink-0 rounded-full', hunterLine.active ? 'animate-pulse bg-primary' : 'bg-faint')" />
-          <span :class="cn('truncate', hunterLine.active ? 'text-primary' : 'text-faint')">{{ hunterLine.text }}</span>
-        </div>
-        <RouterLink
-          v-if="status && status.storage !== 'ok'"
-          :to="{ name: 'settings', query: { tab: 'library' } }"
-          :class="cn('flex items-center gap-2 rounded-md px-2 py-1.5 text-[12px]',
-                     status.storage === 'critical' ? 'bg-destructive/10 text-destructive' : 'bg-warning/10 text-warning')"
-        >
-          <HardDriveIcon class="size-4 shrink-0" :stroke-width="1.5" />
-          {{ t(`storage.sidebar.${status.storage}`) }}
-        </RouterLink>
-        <NetworkModule />
-        <div class="flex flex-col gap-1">
-          <button
-            type="button"
-            class="flex h-8 items-center gap-2 rounded-md px-2 text-[13px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-            @click="toggleTheme"
+        <div v-else class="flex w-[248px] shrink-0 flex-col gap-3 p-3">
+          <div v-if="hunterLine" class="flex items-center gap-2 px-2 text-[12px]">
+            <span :class="cn('size-1.5 shrink-0 rounded-full', hunterLine.active ? 'animate-pulse bg-primary' : 'bg-faint')" />
+            <span :class="cn('truncate', hunterLine.active ? 'text-primary' : 'text-faint')">{{ hunterLine.text }}</span>
+          </div>
+          <RouterLink
+            v-if="status && status.storage !== 'ok'"
+            :to="{ name: 'settings', query: { tab: 'library' } }"
+            :class="cn('flex items-center gap-2 rounded-md px-2 py-1.5 text-[12px]',
+                       status.storage === 'critical' ? 'bg-destructive/10 text-destructive' : 'bg-warning/10 text-warning')"
           >
-            <SunIcon v-if="isDark" class="size-4 shrink-0" :stroke-width="1.5" />
-            <MoonIcon v-else class="size-4 shrink-0" :stroke-width="1.5" />
-            {{ themeLabel }}
-          </button>
-          <button
-            type="button"
-            class="flex h-8 items-center gap-2 rounded-md px-2 text-[13px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-            @click="logout"
-          >
-            <LogOutIcon class="size-4 shrink-0" :stroke-width="1.5" />
-            <span class="flex-1 text-left">{{ t('shell.logout') }}</span>
-            <span class="truncate font-mono text-[11px] text-faint">{{ session.state?.username }}</span>
-          </button>
+            <HardDriveIcon class="size-4 shrink-0" :stroke-width="1.5" />
+            {{ t(`storage.sidebar.${status.storage}`) }}
+          </RouterLink>
+          <NetworkModule />
+          <div class="flex flex-col gap-1">
+            <button
+              type="button"
+              class="flex h-8 items-center gap-2 rounded-md px-2 text-[13px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+              @click="toggleTheme"
+            >
+              <SunIcon v-if="isDark" class="size-4 shrink-0" :stroke-width="1.5" />
+              <MoonIcon v-else class="size-4 shrink-0" :stroke-width="1.5" />
+              {{ themeLabel }}
+            </button>
+            <button
+              type="button"
+              class="flex h-8 items-center gap-2 rounded-md px-2 text-[13px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+              @click="logout"
+            >
+              <LogOutIcon class="size-4 shrink-0" :stroke-width="1.5" />
+              <span class="flex-1 text-left">{{ t('shell.logout') }}</span>
+              <span class="truncate font-mono text-[11px] text-faint">{{ session.state?.username }}</span>
+            </button>
+          </div>
         </div>
-      </div>
+      </Transition>
     </aside>
 
     <!-- Inset panel. Desktop: it scrolls inside itself (#scroller), so its margin and rounded

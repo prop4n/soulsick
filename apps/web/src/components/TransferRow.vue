@@ -8,7 +8,7 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
-import { ago, bytes, splitPath, speed } from '@/lib/format'
+import { ago, bytes, fullDate, splitPath, speed, stamp } from '@/lib/format'
 import { transferState } from '@/lib/status'
 import { cn } from '@/lib/utils'
 import { useLive } from '@/stores/live'
@@ -42,6 +42,16 @@ watch(() => tr.value.state, (state) => {
 const connectingFor = computed(() => {
   const since = connectingSince.get(tr.value.id)
   return since && tr.value.state === 'initializing' ? Math.max(0, Math.round((now.value - since) / 1000)) : null
+})
+
+/** When it ended, or else when it was asked for */
+const when = computed(() => {
+  const done = ['complete', 'failed', 'aborted'].includes(tr.value.state) ? tr.value.completed_at : null
+  const iso = done ?? tr.value.created_at
+  if (!iso)
+    return null
+  const key = done ? 'transfer.endedAt' : tr.value.direction === 'download' ? 'transfer.requestedAt' : 'transfer.askedAt'
+  return { iso, text: stamp(iso), hint: t(key, { date: fullDate(iso) }) }
 })
 
 /** Album download that stopped moving: shown first, it's what needs you */
@@ -162,6 +172,7 @@ const st = computed(() => {
         <span class="min-w-0 truncate font-mono text-faint" :title="tr.local_path">{{ tr.local_path }}</span>
       </template>
       <span v-if="tr.error" class="text-destructive">{{ tr.error }}</span>
+      <time v-if="when" :datetime="when.iso" :title="when.hint" class="ml-auto shrink-0 font-mono text-faint tnum">{{ when.text }}</time>
     </div>
   </div>
 </template>
